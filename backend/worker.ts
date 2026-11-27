@@ -115,7 +115,8 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
  }));
  const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},account=await getPaperAccount(env),equity=Number(account?.equity??0);
  const config={...defaultInstitutionalStrategyConfig,riskPct:defaultInstitutionalStrategyConfig.riskPct};
- const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());\n const amdSession=analyseAmdSession(tf['5m'],Date.now(),env.AMD_SESSION_TIMEZONE||'UTC');
+ const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());
+ const amdSession=analyseAmdSession(tf['5m'],Date.now(),env.AMD_SESSION_TIMEZONE||'UTC');
  const replay=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000);
  const walkForward=walkForwardInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000,4);
  const oos=walkForward.outOfSample?.metrics??null,returns=(replay.valid?replay.trades:[]).map(t=>t.netPct),monteCarlo=monteCarloRisk(returns,2000,100,42),costSensitivity=[0,5,10].map(extraBps=>{const scenario=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},{...config,slippageBps:config.slippageBps+extraBps},10000);return {extraSlippageBps:extraBps,metrics:scenario.metrics};}),qualification={status:'research-only',liveExecutionEnabled:false,checks:{replayValid:replay.valid,walkForwardValid:walkForward.valid,minimumReplayTrades:(replay.metrics?.tradeCount??0)>=100,minimumOosTrades:(oos?.tradeCount??0)>=50,positiveOosExpectancy:(oos?.expectancy??0)>0,drawdownWithinPolicy:(oos?.maxDrawdownPct??100)<=5},reasons:[] as string[]};
@@ -125,7 +126,9 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
   if(env.AUTO_PAPER_ENABLED!=='true')paperExecution={attempted:false,opened:false,reason:'Automatic paper entries are disabled by the AUTO_PAPER_ENABLED safety switch'};
   else{
    const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
-   if(!amdSession.qualified)paperExecution={attempted:false,opened:false,reason:'AMD session gate rejected entry: '+amdSession.reason.join('; '),phase:amdSession.phase};\n   else if(amdSession.direction!==plan.side)paperExecution={attempted:false,opened:false,reason:'AMD direction does not agree with the independently validated multi-timeframe strategy',amdDirection:amdSession.direction,strategyDirection:plan.side};\n   else if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
+   if(!amdSession.qualified)paperExecution={attempted:false,opened:false,reason:'AMD session gate rejected entry: '+amdSession.reason.join('; '),phase:amdSession.phase};
+   else if(amdSession.direction!==(plan.side==='long'?'bullish':plan.side==='short'?'bearish':'neutral'))paperExecution={attempted:false,opened:false,reason:'AMD direction does not agree with the independently validated multi-timeframe strategy',amdDirection:amdSession.direction,strategyDirection:plan.side};
+   else if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
    else if(!nearPlan||!geometry)paperExecution={attempted:false,opened:false,reason:'Current executable price is not sufficiently close to the planned entry or violates stop/target geometry'};
    else{const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:config.riskPct,feeBps:config.feeBps,strategy:'institutional-mtf-v1'});paperExecution={attempted:true,opened:!!order.position,...order};}
   }
