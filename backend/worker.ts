@@ -319,7 +319,7 @@ async function openDivisionPaperPosition(env:Env,division:TradingDivision,assess
  const levels=buildLongPaperLevels(evidence,division);if(!levels.valid)return {opened:false,reason:levels.reason};
  const capitalLimitUsd=policy.maxRiskPerTradePct>0?Number(assessment.riskBudgetUsd)/(policy.maxRiskPerTradePct/100):0,effectiveEquity=Math.min(Number(account.equity),capitalLimitUsd);
  if(!(effectiveEquity>0))return {opened:false,reason:'division allocation has no deployable capital'};
- const dayStart=Number(account.day_start_equity||account.equity),reservedRisk=Number(account.reserved_risk_cash||0),availableEquity=Math.max(0,effectiveEquity-Number(account.reserved_notional||0));
+ const dayStart=Number(account.day_start_equity||account.equity),availableEquity=Math.max(0,effectiveEquity-Number(account.reserved_notional||0));
  if(!(availableEquity>0))return {opened:false,reason:'division allocation is fully reserved by open paper positions'};
  if(dayStart<=0)return {opened:false,reason:'division daily risk baseline is unavailable'};
  const feeBps=10,riskPct=policy.maxRiskPerTradePct,plan=planPaperLongEntry({book,equity:availableEquity,stopPrice:levels.stop,targetPrice:levels.target,riskPct,feeBps,maxRiskPct:policy.maxRiskPerTradePct,now:Date.now(),maxSlippageBps:25});
