@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS division_paper_accounts (
   day_key TEXT,
   day_start_equity REAL,
   open_positions INTEGER NOT NULL DEFAULT 0 CHECK(open_positions >= 0),
+  reserved_notional REAL NOT NULL DEFAULT 0 CHECK(reserved_notional >= 0),
+  reserved_risk_cash REAL NOT NULL DEFAULT 0 CHECK(reserved_risk_cash >= 0),
   updated_at INTEGER NOT NULL,
   FOREIGN KEY(division_id) REFERENCES trading_divisions(division_id)
 );
@@ -57,3 +59,5 @@ CREATE INDEX IF NOT EXISTS idx_division_fills_position_time ON division_paper_fi
 CREATE INDEX IF NOT EXISTS idx_division_performance_closed ON division_performance(division_id,closed_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_division_one_open_symbol ON division_paper_positions(division_id,symbol) WHERE status IN ('open','closing');
+
+CREATE INDEX IF NOT EXISTS idx_division_position_monitor ON division_paper_positions(status,closing_since,symbol);
