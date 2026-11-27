@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles,platformServices} from './departments';
-import {evaluateIntegratedOpportunity} from './intelligence';
+import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio} from './intelligence';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
@@ -38,4 +38,9 @@ describe('central decision and order authority',()=>{
 describe('integrated market-to-decision pipeline',()=>{
  it('uses normalized price changes and rejects incomplete market quality',()=>{const report=evaluateIntegratedOpportunity({market:{symbol:'BTCUSDT',timestamp:1000,source:'test',timeframe:'1m',prices:Array.from({length:24},(_,i)=>100+i*.1),dataQuality:.95},book, evidence:[],capital:{equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true},signalValid:true,economicsValid:true,exchangeHealthy:true,maxAgeMs:5000,now:1000});expect(report.market.tradeable).toBe(false);expect(report.market.risks).toContain('Spread data unavailable');});
  it('combines market report, order-book pressure, agent evidence and capital veto',()=>{const r=evaluateIntegratedOpportunity({market:{symbol:'BTCUSDT',timestamp:1000,source:'test',timeframe:'1m',prices:Array.from({length:24},(_,i)=>100+i*.2),spreadBps:2,dataQuality:.95},book:{symbol:'BTCUSDT',timestamp:1000,mid:105,bids:[{price:104.99,quantity:8}],asks:[{price:105.01,quantity:2}],trades:[{price:105,quantity:4,aggressor:'buy',timestamp:1000}]},evidence:[{agent:'trend',stance:'bullish',confidence:90,reason:'aligned'}],capital:{equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true},signalValid:true,economicsValid:true,exchangeHealthy:true,maxAgeMs:5000,now:1000});expect(r.tradeable).toBe(true);expect(r.mode).toBe('paper');});
+});
+
+describe('portfolio survival simulations',()=>{
+ it('calculates risk of ruin per simulated path, not per time step',()=>{const r=monteCarloRisk([-100],100,20,7);expect(r.ruinProbability).toBe(1);});
+ it('nets signed exposures within correlation groups in stress scenarios',()=>{const r=stressPortfolio([{notional:100,shockPct:-10,correlationGroup:'BTC'},{notional:-50,shockPct:-10,correlationGroup:'BTC'},{notional:100,shockPct:-10,correlationGroup:'ETH'}]);expect(r.stressedLoss).toBe(15);expect(r.groupPnl.BTC).toBe(-5);});
 });
