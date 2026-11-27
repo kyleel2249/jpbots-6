@@ -42,10 +42,13 @@ export type CapitalState={equity:number;peakEquity:number;dailyLossPct:number;we
 export type CapitalPolicy={dailyLossPct:number;weeklyLossPct:number;monthlyLossPct:number;maxDrawdownPct:number;maxPositions:number;maxCorrelatedExposurePct:number;maxLeverage:number;maxMarginUtilisationPct:number;maxRiskPerTradePct:number};
 export const defaultCapitalPolicy:CapitalPolicy={dailyLossPct:2,weeklyLossPct:5,monthlyLossPct:10,maxDrawdownPct:8,maxPositions:4,maxCorrelatedExposurePct:35,maxLeverage:2,maxMarginUtilisationPct:35,maxRiskPerTradePct:.25};
 export function capitalAuthority(s:CapitalState,p=defaultCapitalPolicy){
- const drawdown=s.peakEquity>0?Math.max(0,(s.peakEquity-s.equity)/s.peakEquity*100):100,reasons:string[]=[];
+ const values=[s.equity,s.peakEquity,s.dailyLossPct,s.weeklyLossPct,s.monthlyLossPct,s.openPositions,s.correlatedExposurePct,s.leverage,s.marginUtilisationPct];
+ const valid=values.every(Number.isFinite)&&s.equity>0&&s.peakEquity>0&&Number.isInteger(s.openPositions)&&s.openPositions>=0&&s.dailyLossPct>=0&&s.weeklyLossPct>=0&&s.monthlyLossPct>=0&&s.correlatedExposurePct>=0&&s.leverage>=0&&s.marginUtilisationPct>=0;
+ const drawdown=valid?Math.max(0,(s.peakEquity-s.equity)/s.peakEquity*100):100,reasons:string[]=[];
+ if(!valid)reasons.push('invalid or unavailable account risk metrics');
  if(s.dailyLossPct>=p.dailyLossPct)reasons.push('daily loss limit');if(s.weeklyLossPct>=p.weeklyLossPct)reasons.push('weekly loss limit');if(s.monthlyLossPct>=p.monthlyLossPct)reasons.push('monthly loss limit');if(drawdown>=p.maxDrawdownPct)reasons.push('maximum drawdown');if(s.openPositions>=p.maxPositions)reasons.push('open position cap');if(s.correlatedExposurePct>p.maxCorrelatedExposurePct)reasons.push('correlated exposure cap');if(s.leverage>p.maxLeverage)reasons.push('leverage cap');if(s.marginUtilisationPct>p.maxMarginUtilisationPct)reasons.push('margin utilisation cap');if(!s.exchangeHealthy)reasons.push('exchange unhealthy');if(!s.dataFresh)reasons.push('market data stale');if(!s.accountReconciled)reasons.push('account state not reconciled');
  const throttle=reasons.length?0:Math.max(.1,1-drawdown/p.maxDrawdownPct);
- return {allowNewEntries:reasons.length===0,reasons,drawdownPct:drawdown,riskThrottle:throttle,finalVetoAuthority:true,killSwitch:reasons.some(x=>['exchange unhealthy','market data stale','account state not reconciled','maximum drawdown'].includes(x))};
+ return {allowNewEntries:reasons.length===0,reasons,drawdownPct:drawdown,riskThrottle:throttle,finalVetoAuthority:true,killSwitch:reasons.some(x=>['invalid or unavailable account risk metrics','exchange unhealthy','market data stale','account state not reconciled','maximum drawdown'].includes(x))};
 }
 export function allocateCapital<T extends {id:string;score:number;eligible:boolean;maxAllocationPct:number}>(candidates:T[],totalCapital:number){
  const qualified=candidates.filter(x=>x.eligible&&Number.isFinite(x.score)&&x.score>0),weight=sum(qualified.map(x=>x.score));
