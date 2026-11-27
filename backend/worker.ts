@@ -8,6 +8,7 @@ import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 import { runDepartmentCouncil, type WorkersAiBinding } from '../src/agent-runtime';
 import { analyseInstitutionalMarket } from '../src/institutional-intelligence';
 import { analyseAmdSession } from '../src/amd-session-strategy';
+import { replayAmdSessions, optimiseAmdParameters, walkForwardAmd, buildAmdForwardRecord, type AmdValidationConfig } from '../src/amd-validation';
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 
@@ -21,7 +22,7 @@ interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>};
 interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
@@ -139,6 +140,30 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
  await env.KV_BINDING.put('institutional:latest:'+symbol,JSON.stringify({runId,createdAt,qualification,plan,amdSession,summary:result.report}),{expirationTtl:86400});
  await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
  return result;
+}
+async function fetchAmdHistory(env:Env,symbol:string,days:number){
+ const intervalMs=300_000,now=Date.now(),boundedDays=Math.max(1,Math.min(60,Math.floor(days))),start=now-boundedDays*86_400_000,rows:Kline[]=[];let cursor=start;
+ for(let page=0;page<19&&cursor<now;page++){
+  const batch=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval=5m&limit=1000&startTime='+cursor+'&endTime='+now);
+  if(!batch.length)break;rows.push(...batch);const next=Number(batch[batch.length-1][0])+intervalMs;if(next<=cursor)throw new Error('Historical candle pagination did not advance');cursor=next;if(batch.length<1000)break;
+ }
+ const candles=rows.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<now);
+ return candles;
+}
+async function saveAmdValidation(env:Env,symbol:string,runType:'replay'|'optimisation'|'walk-forward',config:unknown,result:unknown,metrics:unknown){
+ const runId=uuid(),now=Date.now();await env.DB.prepare('INSERT INTO amd_validation_runs(run_id,symbol,run_type,strategy_version,started_at,completed_at,config_json,metrics_json,result_json) VALUES(?,?,?,?,?,?,?,?,?)').bind(runId,symbol,runType,'amd-session-v2',now,now,JSON.stringify(config),JSON.stringify(metrics),JSON.stringify(result)).run();await audit(env,'amd.validation.completed','amd-validation-engine',{runId,symbol,runType});return runId;
+}
+async function runAmdForwardScan(env:Env,symbol:string){
+ const intervals=['5m','15m','1h','4h'] as const,limits=[500,300,200,100];
+ const fetched=await Promise.all(intervals.map(async(interval,i)=>{const raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit='+limits[i]);return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<Date.now());}));
+ const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},now=Date.now(),assessment=analyseAmdSession(tf['5m'],now,env.AMD_SESSION_TIMEZONE||'UTC');
+ const last=tf['5m'].at(-1);if(!last)return {recorded:false,reason:'No closed 5m candle available'};
+ const account=await getPaperAccount(env),plan=buildInstitutionalTradePlan(tf,Number(account?.equity??0),defaultInstitutionalStrategyConfig,now);
+ const record=buildAmdForwardRecord({symbol,assessment,observedAt:last.closeTime,strategy:{valid:plan.valid,side:plan.side,confidence:plan.confidence},paperEnabled:false});
+ const dedupeKey=[symbol,assessment.sessionDate,last.closeTime].join(':');
+ const result=await env.DB.prepare('INSERT OR IGNORE INTO amd_forward_opportunities(opportunity_id,symbol,session_date,observed_at,phase,status,direction,dedupe_key,reason_json,assessment_json,arbitration_json,paper_order_attempted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(uuid(),symbol,record.sessionDate,record.observedAt,record.phase,record.status,record.direction,dedupeKey,JSON.stringify(record.reason),JSON.stringify({...assessment,strategyPlan:plan}),record.arbitration?JSON.stringify(record.arbitration):null,0,now).run();
+ if(Number(result.meta?.changes??0)===1)await audit(env,'amd.forward.opportunity.recorded','amd-forward-observer',{symbol,sessionDate:record.sessionDate,observedAt:record.observedAt,status:record.status,direction:record.direction});
+ return {...record,recorded:Number(result.meta?.changes??0)===1,dedupeKey};
 }
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
