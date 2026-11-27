@@ -1,6 +1,7 @@
-import {describe,it,expect,vi} from 'vitest';
+import {describe,it,expect,vi,afterEach} from 'vitest';
 import {onRequest} from './[[path]].ts';
 function context(url:string,env:any,headers?:Record<string,string>,method='GET',body?:string){return {request:new Request(url,{method,headers,body:method==='GET'?undefined:body}),env} as any;}
+afterEach(()=>vi.unstubAllGlobals());
 describe('Cloudflare Pages API proxy',()=>{
  it('injects the Pages secret for protected routes and overwrites browser credentials',async()=>{
   let captured:Request|undefined;const binding={fetch:vi.fn(async(r:Request)=>{captured=r;return new Response('ok');})};
@@ -17,9 +18,20 @@ describe('Cloudflare Pages API proxy',()=>{
   await onRequest(context('https://app.example/api/market/tickers',{API_WORKER:binding},{authorization:'Bearer attacker'}));
   expect(captured?.headers.has('authorization')).toBe(false);
  });
- it('reports a missing backend binding distinctly',async()=>{
+ it('uses the direct Worker fallback when the Pages Service Binding is absent',async()=>{
+  let captured:Request|undefined;const fetchMock=vi.fn(async(r:Request)=>{captured=r;return new Response('ok');});vi.stubGlobal('fetch',fetchMock);
+  const response=await onRequest(context('https://app.example/api/paper/account?mode=paper',{BACKEND_WORKER_URL:'https://worker.example.workers.dev'}));
+  expect(response.status).toBe(200);expect(captured?.url).toBe('https://worker.example.workers.dev/api/paper/account?mode=paper');expect(response.headers.get('x-jpbots-backend-transport')).toBe('direct-worker-fallback');
+ });
+ it('injects the server-side operator token in direct fallback mode',async()=>{
+  let captured:Request|undefined;vi.stubGlobal('fetch',vi.fn(async(r:Request)=>{captured=r;return new Response('ok');}));
+  await onRequest(context('https://app.example/api/operator/status',{OPERATOR_API_TOKEN:'server-secret',BACKEND_WORKER_URL:'https://worker.example.workers.dev'},{authorization:'Bearer attacker'}));
+  expect(captured?.headers.get('authorization')).toBe('Bearer server-secret');
+ });
+ it('reports a fallback network failure distinctly',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async()=>{throw new Error('network unavailable');}));
   const response=await onRequest(context('https://app.example/api/market/tickers',{}));
-  expect(response.status).toBe(503);expect((await response.json() as any).code).toBe('BACKEND_BINDING_MISSING');
+  expect(response.status).toBe(502);expect((await response.json() as any).code).toBe('BACKEND_BINDING_AND_FALLBACK_UNAVAILABLE');
  });
  it('maps the Pages health URL to the Worker health route',async()=>{
   let captured:Request|undefined;const binding={fetch:vi.fn(async(r:Request)=>{captured=r;return new Response('ok');})};
