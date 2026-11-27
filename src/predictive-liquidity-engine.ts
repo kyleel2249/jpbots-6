@@ -1,4 +1,4 @@
-export type ExchangeQuote={exchange:string;symbol:string;observedAt:number;sequence?:number;bid:number;ask:number;bidDepth:number;askDepth:number;source:string};
+export type ExchangeQuote={exchange:string;symbol:string;observedAt:number;sequence?:number;bid:number;ask:number;bidDepth:number;askDepth:number;bids?:{price:number;quantity:number}[];asks?:{price:number;quantity:number}[];source:string};
 export type DerivativePoint={observedAt:number;fundingRate:number;openInterest:number};
 export type LiquidationEvent={observedAt:number;side:'long'|'short';price:number;quantity:number;source:string};
 export type LiquidityLevel={price:number;bidNotional:number;askNotional:number;netNotional:number;kind:'support'|'resistance'|'balanced'};
@@ -19,7 +19,7 @@ export function synchroniseExchanges(quotes:ExchangeQuote[],now:number,maxAgeMs=
 export function buildLiquidityMap(quotes:ExchangeQuote[],referencePrice:number,bucketBps=5){
  if(!finite(bucketBps)||bucketBps<=0||!finite(referencePrice)||referencePrice<=0)throw new Error('Liquidity reference price and bucket size must be positive');
  const bucketSize=referencePrice*bucketBps/10000,buckets=new Map<number,{bidNotional:number;askNotional:number}>();
- for(const q of quotes){for(const [side,depth] of [['bid',q.bidDepth],['ask',q.askDepth]] as const){const price=side==='bid'?q.bid:q.ask,key=Math.round(price/bucketSize);const b=buckets.get(key)??{bidNotional:0,askNotional:0};if(side==='bid')b.bidNotional+=price*depth;else b.askNotional+=price*depth;buckets.set(key,b);}}
+ for(const q of quotes){const sides=[['bid',q.bids??[{price:q.bid,quantity:q.bidDepth}]],['ask',q.asks??[{price:q.ask,quantity:q.askDepth}]]] as const;for(const [side,levels] of sides){for(const level of levels){const price=level.price,quantity=level.quantity,key=Math.round(price/bucketSize);const b=buckets.get(key)??{bidNotional:0,askNotional:0};if(side==='bid')b.bidNotional+=price*quantity;else b.askNotional+=price*quantity;buckets.set(key,b);}}}
  return [...buckets.entries()].map(([key,v])=>{const price=key*bucketSize;return {price,bidNotional:v.bidNotional,askNotional:v.askNotional,netNotional:v.bidNotional-v.askNotional,kind:v.bidNotional>v.askNotional*1.25?'support' as const:v.askNotional>v.bidNotional*1.25?'resistance' as const:'balanced' as const};}).sort((a,b)=>b.netNotional-a.netNotional);
 }
 export function analyseLiquidations(events:LiquidationEvent[],now:number,maxAgeMs=86_400_000){
@@ -53,12 +53,25 @@ export function evolveStrategies(seed:StrategyGenome[],fitness:(g:StrategyGenome
  const final=pool.map(g=>({genome:g,fitness:fitness(g)})).filter(x=>finite(x.fitness)).sort((a,b)=>b.fitness-a.fitness);
  return {best:final[0]??null,history,finalPopulation:final.length,holdoutRequired:true,livePromotion:false};
 }
+
+export function scoreStrategyGenome(genome:StrategyGenome,closes:number[],feeBps=10,slippageBps=5){
+ if(closes.length<genome.slow+5||closes.some(p=>!finite(p)||p<=0))return -1e6;
+ const sma=(end:number,period:number)=>mean(closes.slice(end-period,end));
+ let position=0,entry=0,equity=1,peak=1,maxDrawdown=0,trades=0,wins=0;
+ for(let i=genome.slow;i<closes.length;i++){const fast=sma(i,genome.fast),slow=sma(i,genome.slow),price=closes[i],cost=(feeBps+slippageBps)*2/10000;
+  if(position===0&&fast>slow*(1+genome.entryThreshold/100)){position=1;entry=price*(1+cost/2);}
+  else if(position===1&&(fast<slow||price<=entry*(1-genome.stopAtr/100)||price>=entry*(1+genome.targetR*genome.stopAtr/100))){const result=price*(1-cost/2)/entry-1;equity*=1+result;trades++;if(result>0)wins++;position=0;peak=Math.max(peak,equity);maxDrawdown=Math.max(maxDrawdown,(peak-equity)/peak);}
+ }
+ if(position){const result=closes.at(-1)!*(1-(feeBps+slippageBps)/10000)/entry-1;equity*=1+result;trades++;if(result>0)wins++;}
+ if(trades<3)return -1000+trades;
+ const net=equity-1;return net-maxDrawdown*1.5+(wins/trades)*.05;
+}
 export function calculatePortfolioRisk(returns:Record<string,number[]>,confidence=.95){
  const symbols=Object.keys(returns).sort(),series=symbols.map(s=>returns[s].filter(finite));
  const n=Math.min(...series.map(x=>x.length));if(symbols.length===0||n<20||confidence<=.5||confidence>=1)throw new Error('At least one asset and 20 aligned returns with confidence in (0.5,1) are required');
  const aligned=series.map(x=>x.slice(-n)),means=aligned.map(mean),corr=symbols.map((_,i)=>symbols.map((__,j)=>{const a=aligned[i],b=aligned[j],ma=means[i],mb=means[j],cov=mean(a.map((v,k)=>(v-ma)*(b[k]-mb))),den=Math.sqrt(mean(a.map(v=>(v-ma)**2))*mean(b.map(v=>(v-mb)**2)));return den?cov/den:0;}));
  const portfolio=Array.from({length:n},(_,k)=>mean(aligned.map(x=>x[k]))).sort((a,b)=>a-b),index=Math.max(0,Math.floor((1-confidence)*n)),varLoss=-portfolio[index],tail=portfolio.slice(0,index+1),cvarLoss=-mean(tail);
- return {symbols,sampleCount:n,confidence,correlation:corr.map((row,i)=>({symbol:symbols[i],values:row})),historicalVaR:varLoss,historicalCVaR:cvarLoss,tailSampleCount:tail.length,limitations:['Equal-weight portfolio approximation; supply actual portfolio weights for production allocation.','Historical tail risk does not guarantee future loss bounds.']};
+ return {symbols,sampleCount:n,confidence,correlation:corr.map((row,i)=>({symbol:symbols[i],values:row})),historicalVaR:varLoss,historicalCVaR:cvarLoss,tailSampleCount:tail.length,limitations:['Equal-weight portfolio approximation; supply actual portfolio weights for production allocation.','Historical tail risk does not guarantee future loss bounds.','Decision-event checksums detect accidental tampering but are not cryptographic signatures.']};
 }
 export function simulateSmartExecution(input:{side:'buy'|'sell';quantity:number;levels:{price:number;quantity:number}[];referencePrice:number;feeBps:number;maxSlippageBps:number;latencyMs:number;queuePenaltyBps?:number}){
  if(!finite(input.quantity)||input.quantity<=0||!finite(input.referencePrice)||input.referencePrice<=0||!finite(input.feeBps)||input.feeBps<0||!finite(input.maxSlippageBps)||input.maxSlippageBps<0||!finite(input.latencyMs)||input.latencyMs<0||input.levels.some(l=>!finite(l.price)||l.price<=0||!finite(l.quantity)||l.quantity<0))throw new Error('Invalid execution simulation inputs');
