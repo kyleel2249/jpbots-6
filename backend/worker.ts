@@ -368,7 +368,7 @@ async function route(request:Request,env:Env):Promise<Response>{
 }
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{try{return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},
- async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(env.AUTO_PAPER_ENABLED==='true'&&new Date(createdAt).getUTCMinutes()%5===0)tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
+ async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),fiveMinuteTick=new Date(createdAt).getUTCMinutes()%5===0,tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(fiveMinuteTick){tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'amd-forward-scan' as const,symbol,createdAt})));if(env.AUTO_PAPER_ENABLED==='true')tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));}await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
@@ -406,6 +406,9 @@ export class AgentOrchestrator {
      if(this.env.AUTO_PAPER_ENABLED!=='true')throw new Error('Automatic paper strategy workflow is disabled');
      const result=await runInstitutionalStrategyWorkflow(this.env,task.symbol,true);
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'institutional:supervisor','institutional-strategy-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    }else if(task.kind==='amd-forward-scan'){
+     const result=await runAmdForwardScan(this.env,task.symbol);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'institutional:AMD Session Phase Intelligence','amd-forward-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
      const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
      const evidence=handlerForInstitutionalFinding(finding,rt);
