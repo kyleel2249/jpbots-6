@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles,platformServices} from './departments';
 import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio,netReward} from './intelligence';
-import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,authorizeTrade,authorizeOrder} from './shared-services';
+import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,agentTrustScore,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
  it('calculates imbalance, microprice and depth bands',()=>{const r=analyseOrderBook(book);expect(r.obi).toBeCloseTo(.2);expect(r.microprice).not.toBeNull();expect(r.bands).toHaveLength(5);expect(r.tbi).toBe(1);});
@@ -57,4 +57,9 @@ describe('per-trade risk authority',()=>{
 describe('net trade economics',()=>{
  it('deducts entry and exit fees and slippage from reward-to-risk',()=>{const r=netReward(100,110,95,1,10,5);expect(r?.net).toBeCloseTo(9.685);expect(r?.netRewardRisk).toBeGreaterThan(1);});
  it('rejects non-finite inputs and zero stop distance',()=>{expect(netReward(100,110,100,1,10,5)).toBeNull();expect(netReward(Number.NaN,110,95,1,10,5)).toBeNull();});
+});
+
+describe('performance data integrity',()=>{
+ it('prevents invalid performance metrics from qualifying',()=>{const r=classifyPerformance({netPnl:Number.NaN,grossProfit:30,grossLoss:10,maxDrawdownPct:5,trades:300,expectancy:1,executionSlippageBps:2,signalCalibrationError:.1,regimeStable:true,dataReliable:true});expect(r.status).toBe('probation-or-restricted');expect(r.failures).toContain('invalid or incomplete performance metrics');});
+ it('returns zero trust for invalid task counters',()=>expect(agentTrustScore({successfulTasks:10,failedTasks:-1,policyViolations:0,dataErrors:0,decisionReversals:0})).toBe(0));
 });
