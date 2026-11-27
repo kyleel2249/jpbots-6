@@ -37,12 +37,12 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
  const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);
  const imbalance=division==='scalping'?(e.scalpingOrderBookImbalance??e.orderBookImbalance):(e.dayTradingOrderBookImbalance??e.orderBookImbalance);
  const alignedTrend=division==='day-trading'?(e.dayTradingTrendAlignment??e.trendAlignment):e.trendAlignment;
- const volumeRatio=division==='scalping'?(e.scalpingVolumeRatio??volumeRatio):(e.dayTradingVolumeRatio??volumeRatio);
- const volatilityPct=division==='scalping'?(e.scalpingVolatilityPct??volatilityPct):(e.dayTradingVolatilityPct??volatilityPct);
- const fvg=division==='scalping'?(e.scalpingFvg??fvg):(e.dayTradingFvg??fvg);
- const liquiditySweep=division==='scalping'?(e.scalpingLiquiditySweep??liquiditySweep):(e.dayTradingLiquiditySweep??liquiditySweep);
- const structureShift=division==='scalping'?(e.scalpingMarketStructureShift??structureShift):(e.dayTradingMarketStructureShift??structureShift);
- const vwapAligned=division==='scalping'?(e.scalpingVwapAligned??vwapAligned):(e.dayTradingVwapAligned??vwapAligned);
+ const volumeRatio=division==='scalping'?(e.scalpingVolumeRatio??e.volumeRatio):(e.dayTradingVolumeRatio??e.volumeRatio);
+ const volatilityPct=division==='scalping'?(e.scalpingVolatilityPct??e.volatilityPct):(e.dayTradingVolatilityPct??e.volatilityPct);
+ const fvg=division==='scalping'?(e.scalpingFvg??e.fvg):(e.dayTradingFvg??e.fvg);
+ const liquiditySweep=division==='scalping'?(e.scalpingLiquiditySweep??e.liquiditySweep):(e.dayTradingLiquiditySweep??e.liquiditySweep);
+ const structureShift=division==='scalping'?(e.scalpingMarketStructureShift??e.marketStructureShift):(e.dayTradingMarketStructureShift??e.marketStructureShift);
+ const vwapAligned=division==='scalping'?(e.scalpingVwapAligned??e.vwapAligned):(e.dayTradingVwapAligned??e.vwapAligned);
  if(direction==='neutral')vetoes.push('No directional edge');
  if(e.spreadBps>policy.maxSpreadBps)vetoes.push('Spread exceeds division limit');
  if(e.estimatedRoundTripCostBps>policy.maxRoundTripCostBps)vetoes.push('Estimated round-trip costs exceed division limit');
