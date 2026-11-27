@@ -18,8 +18,8 @@ export async function fetchMarketTickers(
       return {ticker:{symbol,price,changePct,volume,observedAt,source:'Binance Spot REST'} as MarketTicker};
     }catch{return {error:{symbol,code:'UPSTREAM_NETWORK_ERROR',message:'Unable to reach Binance for this symbol'}};}
   }));
-  const tickers=settled.flatMap(x=>'ticker' in x?[x.ticker]:[]);
-  const errors=settled.flatMap(x=>'error' in x?[x.error]:[]);
+  const tickers=settled.flatMap(x=>'ticker' in x&&x.ticker?[x.ticker]:[]);
+  const errors=settled.flatMap(x=>'error' in x&&x.error?[x.error]:[]);
   const providerStatus=errors.length===0?'online':tickers.length?'degraded':'offline';
   return {ok:tickers.length>0,provider:'Binance Spot REST',providerStatus,source:'Binance Spot REST',observedAt,requested:symbols.length,returned:tickers.length,tickers,errors};
 }
