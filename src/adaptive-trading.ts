@@ -2,7 +2,7 @@ export type TradingDivision = 'scalping' | 'day-trading';
 export type AdaptiveMode = 'SCALPING' | 'DAY_TRADING' | 'COMBINATION' | 'NEITHER';
 export type Direction = 'long' | 'short' | 'neutral';
 export interface MarketEvidence {
-  symbol:string; assetClass:string; price:number; direction:Direction; scalpingDirection?:Direction; dayTradingDirection?:Direction; observedAt:number;
+  symbol:string; assetClass:string; price:number; direction:Direction; scalpingDirection?:Direction; dayTradingDirection?:Direction; scalpingOrderBookImbalance?:number; dayTradingOrderBookImbalance?:number; dayTradingTrendAlignment?:number; observedAt:number;
   spreadBps:number; estimatedRoundTripCostBps:number; volatilityPct:number; volumeRatio:number;
   trendAlignment:number; orderBookImbalance:number; liquidityUsd:number; atrPct:number;
   dataAgeMs:number; sessionEligible:boolean; fvg:boolean; liquiditySweep:boolean;
@@ -33,7 +33,7 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
  const reasons:string[]=[],vetoes:string[]=[];
  const fresh=e.dataAgeMs<=(division==='scalping'?5000:60000);
  if(!fresh)vetoes.push('Market data is stale for this trading horizon');
- const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);
+ const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);\n const imbalance=division==='scalping'?(e.scalpingOrderBookImbalance??e.orderBookImbalance):(e.dayTradingOrderBookImbalance??e.orderBookImbalance);\n const alignedTrend=division==='day-trading'?(e.dayTradingTrendAlignment??e.trendAlignment):e.trendAlignment;
  if(direction==='neutral')vetoes.push('No directional edge');
  if(e.spreadBps>policy.maxSpreadBps)vetoes.push('Spread exceeds division limit');
  if(e.estimatedRoundTripCostBps>policy.maxRoundTripCostBps)vetoes.push('Estimated round-trip costs exceed division limit');
@@ -42,7 +42,7 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
  if(division==='day-trading'&&!e.sessionEligible)vetoes.push('Outside configured day-trading session');
  let score=0,strategy='NO_TRADE';
  if(division==='scalping'){
-  const micro=clamp(Math.abs(e.orderBookImbalance)*100);
+  const micro=clamp((imbalance*(direction==='short'?-1:1)+1)*50);
   const volume=clamp((e.volumeRatio-0.7)*55);
   const volatility=clamp(100-Math.abs(e.volatilityPct-0.65)*65);
   const costs=clamp(100-e.estimatedRoundTripCostBps*5);
@@ -54,9 +54,9 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
   else if(e.volatilityPct<0.8)strategy='MICRO_MEAN_REVERSION';
   reasons.push('Microstructure, spread, volume and short-horizon volatility weighted');
  }else{
-  const trend=clamp(Math.abs(e.trendAlignment)*100),structure=(e.marketStructureShift?25:0)+(e.fvg?18:0)+(e.liquiditySweep?15:0)+(e.vwapAligned?12:0);
+  const trend=clamp((alignedTrend*(direction==='short'?-1:1)+1)*50),structure=(e.marketStructureShift?25:0)+(e.fvg?18:0)+(e.liquiditySweep?15:0)+(e.vwapAligned?12:0);
   const volume=clamp((e.volumeRatio-0.6)*45),volatility=clamp(100-Math.abs(e.volatilityPct-2)*20);
-  score=clamp(trend*.32+clamp(structure)*.28+volume*.16+volatility*.14+clamp(Math.abs(e.orderBookImbalance)*100)*.10);
+  score=clamp(trend*.32+clamp(structure)*.28+volume*.16+volatility*.14+clamp((imbalance*(direction==='short'?-1:1)+1)*50)*.10);
   if(e.marketStructureShift&&e.fvg&&e.liquiditySweep)strategy='SMC_MSS_SWEEP_FVG';
   else if(e.marketStructureShift&&e.vwapAligned)strategy='STRUCTURE_VWAP_CONTINUATION';
   else if(e.fvg)strategy='FVG_RETRACEMENT';
