@@ -14,7 +14,7 @@ interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan';symbol:string;createdAt:number};
+type Task={id:string;kind:'market-scan';symbol:string;createdAt:number;attempts?:number};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
@@ -144,13 +144,22 @@ export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
  async fetch(request:Request):Promise<Response>{
   const url=new URL(request.url);
-  if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[];return json({id:this.state.id.toString(),queued:queue.length,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
-  if(url.pathname==='/enqueue'&&request.method==='POST'){const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[];await this.state.storage.put('queue',[...queue,...tasks].slice(-500));await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:tasks.length,queued:queue.length+tasks.length});}
+  if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[],lastProcessedAt=await this.state.storage.get<number>('lastProcessedAt')??null,lastError=await this.state.storage.get<string>('lastError')??null,processedCount=await this.state.storage.get<number>('processedCount')??0;return json({id:this.state.id.toString(),queued:queue.length,lastProcessedAt,lastError,processedCount,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
+  if(url.pathname==='/enqueue'&&request.method==='POST'){const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[],keys=new Set(queue.map(t=>t.kind+':'+t.symbol)),accepted=tasks.filter(t=>!keys.has(t.kind+':'+t.symbol));await this.state.storage.put('queue',[...queue,...accepted].slice(-500));await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:accepted.length,skippedDuplicates:tasks.length-accepted.length,queued:queue.length+accepted.length});}
   return json({error:'Not found'},404);
  }
  async alarm():Promise<void>{
-  const queue=await this.state.storage.get<Task[]>('queue')??[],batch=queue.splice(0,3);
-  for(const task of batch){try{const result=await runMarketScan(this.env,task.symbol);await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?)").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();}catch(error){await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?)").bind(task.id,'market-data-intelligence','market-scan','failed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify({error:String(error)})).run();}}
-  await this.state.storage.put('queue',queue);if(queue.length)await this.state.storage.setAlarm(Date.now()+1000);
+  const queue=await this.state.storage.get<Task[]>('queue')??[],batch=queue.splice(0,3);let processed=0,nextDelay=1000;
+  for(const task of batch){try{
+    const result=await runMarketScan(this.env,task.symbol);
+    await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    processed++;
+  }catch(error){
+    const attempts=(task.attempts??0)+1,message=String(error);
+    await this.state.storage.put('lastError',message);
+    if(attempts<3){queue.push({...task,attempts});nextDelay=Math.max(nextDelay,1000*2**attempts);await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','retrying',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();}
+    else await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','failed',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();
+  }}
+  await this.state.storage.put('queue',queue);await this.state.storage.put('lastProcessedAt',Date.now());await this.state.storage.put('processedCount',(await this.state.storage.get<number>('processedCount')??0)+processed);if(queue.length)await this.state.storage.setAlarm(Date.now()+nextDelay);
  }
 }
