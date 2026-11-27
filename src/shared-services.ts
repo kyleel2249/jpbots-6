@@ -84,4 +84,4 @@ export function authorizeOrder(input:{signalApproved:boolean;capital:CapitalStat
  if(input.price!==undefined&&(!Number.isFinite(input.price)||input.price<=0))errors.push('price invalid');
  if(input.priceTick!==undefined&&(!Number.isFinite(input.priceTick)||input.priceTick<=0||input.price===undefined||Math.abs(input.price/input.priceTick-Math.round(input.price/input.priceTick))>1e-8))errors.push('price precision invalid');
  return {approved:errors.length===0,errors,market:input.market,quantity:input.quantity,mode:'paper' as const,liveExecutionEnabled:false as const,capitalVeto:!risk.allowNewEntries||errors.some(x=>x.includes('per-trade risk'))};
-}}
+}
