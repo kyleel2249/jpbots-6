@@ -5,7 +5,7 @@ export interface MarketEvidence {
   symbol:string; assetClass:string; price:number; direction:Direction; scalpingDirection?:Direction; dayTradingDirection?:Direction; scalpingOrderBookImbalance?:number; dayTradingOrderBookImbalance?:number; dayTradingTrendAlignment?:number; observedAt:number;
   spreadBps:number; estimatedRoundTripCostBps:number; volatilityPct:number; volumeRatio:number;
   trendAlignment:number; orderBookImbalance:number; liquidityUsd:number; atrPct:number;
-  dataAgeMs:number; sessionEligible:boolean; fvg:boolean; liquiditySweep:boolean;
+  dataAgeMs:number; scalpingDataAgeMs?:number; dayTradingDataAgeMs?:number; sessionEligible:boolean; scalpingAtrPct?:number; dayTradingAtrPct?:number; scalpingVolumeRatio?:number; dayTradingVolumeRatio?:number; scalpingVolatilityPct?:number; dayTradingVolatilityPct?:number; scalpingFvg?:boolean; dayTradingFvg?:boolean; scalpingLiquiditySweep?:boolean; dayTradingLiquiditySweep?:boolean; scalpingMarketStructureShift?:boolean; dayTradingMarketStructureShift?:boolean; scalpingVwapAligned?:boolean; dayTradingVwapAligned?:boolean; fvg:boolean; liquiditySweep:boolean;
   marketStructureShift:boolean; vwapAligned:boolean; fundingExtreme?:boolean;
 }
 export interface DivisionPolicy {
@@ -24,44 +24,52 @@ export interface AdaptiveDecision {
   liveTradingEnabled:false;
 }
 export const DEFAULT_DIVISION_POLICIES:Record<TradingDivision,DivisionPolicy>={
-  scalping:{allocationUsd:2,maxRiskPerTradePct:0.35,maxDailyLossPct:1.5,maxOpenPositions:2,minScore:72,maxSpreadBps:8,maxRoundTripCostBps:14,minLiquidityUsd:25000},
+  scalping:{allocationUsd:2,maxRiskPerTradePct:0.35,maxDailyLossPct:1.5,maxOpenPositions:2,minScore:72,maxSpreadBps:8,maxRoundTripCostBps:32,minLiquidityUsd:25000},
   'day-trading':{allocationUsd:3,maxRiskPerTradePct:0.5,maxDailyLossPct:2,maxOpenPositions:3,minScore:70,maxSpreadBps:18,maxRoundTripCostBps:28,minLiquidityUsd:10000}
 };
 const clamp=(n:number,min=0,max=100)=>Math.max(min,Math.min(max,n));
-function validate(e:MarketEvidence){if(!e||typeof e.symbol!=='string'||!e.symbol.trim())throw new Error('A market symbol is required');for(const k of ['price','observedAt','spreadBps','estimatedRoundTripCostBps','volatilityPct','volumeRatio','trendAlignment','orderBookImbalance','liquidityUsd','atrPct','dataAgeMs'] as const)if(!Number.isFinite(e[k]))throw new Error('Invalid market evidence: '+k);if(e.price<=0||e.spreadBps<0||e.estimatedRoundTripCostBps<0||e.liquidityUsd<0||e.dataAgeMs<0)throw new Error('Market evidence contains impossible values');if(!['long','short','neutral'].includes(e.direction)||!['long','short','neutral'].includes(e.scalpingDirection??e.direction)||!['long','short','neutral'].includes(e.dayTradingDirection??e.direction))throw new Error('Invalid market direction');for(const k of ['orderBookImbalance','trendAlignment','scalpingOrderBookImbalance','dayTradingOrderBookImbalance','dayTradingTrendAlignment'] as const){const v=e[k];if(v!==undefined&&(!Number.isFinite(v)||v < -1||v > 1))throw new Error('Invalid directional evidence: '+k);}}
+function validate(e:MarketEvidence){if(!e||typeof e.symbol!=='string'||!e.symbol.trim())throw new Error('A market symbol is required');for(const k of ['price','observedAt','spreadBps','estimatedRoundTripCostBps','volatilityPct','volumeRatio','trendAlignment','orderBookImbalance','liquidityUsd','atrPct','dataAgeMs'] as const)if(!Number.isFinite(e[k]))throw new Error('Invalid market evidence: '+k);if(e.price<=0||e.spreadBps<0||e.estimatedRoundTripCostBps<0||e.liquidityUsd<0||e.dataAgeMs<0)throw new Error('Market evidence contains impossible values');if(!['long','short','neutral'].includes(e.direction)||!['long','short','neutral'].includes(e.scalpingDirection??e.direction)||!['long','short','neutral'].includes(e.dayTradingDirection??e.direction))throw new Error('Invalid market direction');for(const k of ['scalpingDataAgeMs','dayTradingDataAgeMs','orderBookImbalance','trendAlignment','scalpingOrderBookImbalance','dayTradingOrderBookImbalance','dayTradingTrendAlignment'] as const){const v=e[k];if(v!==undefined&&(!Number.isFinite(v)||(k.includes('DataAge')?v<0:v < -1||v > 1)))throw new Error('Invalid directional evidence: '+k);}}
 function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy):DivisionAssessment{
  const reasons:string[]=[],vetoes:string[]=[];
- const fresh=e.dataAgeMs<=(division==='scalping'?5000:60000);
+ if(policy.allocationUsd<=0)vetoes.push('No allocated paper capital available');
+ const age=division==='scalping'?(e.scalpingDataAgeMs??e.dataAgeMs):(e.dayTradingDataAgeMs??e.dataAgeMs);
+ const fresh=age<=(division==='scalping'?5000:60000);
  if(!fresh)vetoes.push('Market data is stale for this trading horizon');
  const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);
  const imbalance=division==='scalping'?(e.scalpingOrderBookImbalance??e.orderBookImbalance):(e.dayTradingOrderBookImbalance??e.orderBookImbalance);
  const alignedTrend=division==='day-trading'?(e.dayTradingTrendAlignment??e.trendAlignment):e.trendAlignment;
+ const volumeRatio=division==='scalping'?(e.scalpingVolumeRatio??e.volumeRatio):(e.dayTradingVolumeRatio??e.volumeRatio);
+ const volatilityPct=division==='scalping'?(e.scalpingVolatilityPct??e.volatilityPct):(e.dayTradingVolatilityPct??e.volatilityPct);
+ const fvg=division==='scalping'?(e.scalpingFvg??e.fvg):(e.dayTradingFvg??e.fvg);
+ const liquiditySweep=division==='scalping'?(e.scalpingLiquiditySweep??e.liquiditySweep):(e.dayTradingLiquiditySweep??e.liquiditySweep);
+ const structureShift=division==='scalping'?(e.scalpingMarketStructureShift??e.marketStructureShift):(e.dayTradingMarketStructureShift??e.marketStructureShift);
+ const vwapAligned=division==='scalping'?(e.scalpingVwapAligned??e.vwapAligned):(e.dayTradingVwapAligned??e.vwapAligned);
  if(direction==='neutral')vetoes.push('No directional edge');
  if(e.spreadBps>policy.maxSpreadBps)vetoes.push('Spread exceeds division limit');
  if(e.estimatedRoundTripCostBps>policy.maxRoundTripCostBps)vetoes.push('Estimated round-trip costs exceed division limit');
  if(e.liquidityUsd<policy.minLiquidityUsd)vetoes.push('Insufficient verified liquidity');
- if(e.volatilityPct<=0||e.volatilityPct>(division==='scalping'?2.5:8))vetoes.push('Volatility outside division operating envelope');
+ if(volatilityPct<=0||volatilityPct>(division==='scalping'?2.5:8))vetoes.push('Volatility outside division operating envelope');
  if(division==='day-trading'&&!e.sessionEligible)vetoes.push('Outside configured day-trading session');
  let score=0,strategy='NO_TRADE';
  if(division==='scalping'){
   const micro=clamp((imbalance*(direction==='short'?-1:1)+1)*50);
-  const volume=clamp((e.volumeRatio-0.7)*55);
-  const volatility=clamp(100-Math.abs(e.volatilityPct-0.65)*65);
+  const volume=clamp((volumeRatio-0.7)*55);
+  const volatility=clamp(100-Math.abs(volatilityPct-0.65)*65);
   const costs=clamp(100-e.estimatedRoundTripCostBps*5);
-  const structure=(e.liquiditySweep?22:0)+(e.fvg?12:0)+(e.vwapAligned?10:0);
+  const structure=(liquiditySweep?22:0)+(fvg?12:0)+(vwapAligned?10:0);
   score=clamp(micro*.24+volume*.18+volatility*.18+costs*.22+clamp(structure)*.18);
-  if(e.liquiditySweep&&e.marketStructureShift)strategy='LIQUIDITY_SWEEP_RECLAIM';
-  else if(e.fvg&&e.vwapAligned)strategy='FVG_VWAP_RETEST';
-  else if(e.volumeRatio>=1.5&&micro>=55)strategy='ORDER_FLOW_MOMENTUM';
-  else if(e.volatilityPct<0.8)strategy='MICRO_MEAN_REVERSION';
+  if(liquiditySweep&&structureShift)strategy='LIQUIDITY_SWEEP_RECLAIM';
+  else if(fvg&&vwapAligned)strategy='FVG_VWAP_RETEST';
+  else if(volumeRatio>=1.5&&micro>=55)strategy='ORDER_FLOW_MOMENTUM';
+  else if(volatilityPct<0.8)strategy='MICRO_MEAN_REVERSION';
   reasons.push('Microstructure, spread, volume and short-horizon volatility weighted');
  }else{
-  const trend=clamp((alignedTrend*(direction==='short'?-1:1)+1)*50),structure=(e.marketStructureShift?25:0)+(e.fvg?18:0)+(e.liquiditySweep?15:0)+(e.vwapAligned?12:0);
-  const volume=clamp((e.volumeRatio-0.6)*45),volatility=clamp(100-Math.abs(e.volatilityPct-2)*20);
+  const trend=clamp((alignedTrend*(direction==='short'?-1:1)+1)*50),structure=(structureShift?25:0)+(fvg?18:0)+(liquiditySweep?15:0)+(vwapAligned?12:0);
+  const volume=clamp((volumeRatio-0.6)*45),volatility=clamp(100-Math.abs(volatilityPct-2)*20);
   score=clamp(trend*.32+clamp(structure)*.28+volume*.16+volatility*.14+clamp((imbalance*(direction==='short'?-1:1)+1)*50)*.10);
-  if(e.marketStructureShift&&e.fvg&&e.liquiditySweep)strategy='SMC_MSS_SWEEP_FVG';
-  else if(e.marketStructureShift&&e.vwapAligned)strategy='STRUCTURE_VWAP_CONTINUATION';
-  else if(e.fvg)strategy='FVG_RETRACEMENT';
+  if(structureShift&&fvg&&liquiditySweep)strategy='SMC_MSS_SWEEP_FVG';
+  else if(structureShift&&vwapAligned)strategy='STRUCTURE_VWAP_CONTINUATION';
+  else if(fvg)strategy='FVG_RETRACEMENT';
   else if(trend>=65)strategy='MTF_TREND_PULLBACK';
   reasons.push('Multi-timeframe trend, SMC structure, FVG, liquidity and session evidence weighted');
  }

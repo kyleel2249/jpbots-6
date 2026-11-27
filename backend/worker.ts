@@ -14,7 +14,8 @@ import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwa
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 import { assessAdvancedMarket } from '../src/advanced-intelligence';
-import { evaluateAdaptiveTrading, type MarketEvidence } from '../src/adaptive-trading';
+import { evaluateAdaptiveTrading, DEFAULT_DIVISION_POLICIES, type MarketEvidence, type TradingDivision, type DivisionPolicy } from '../src/adaptive-trading';
+import { buildDivisionMarketEvidence, buildLongPaperLevels } from '../src/adaptive-division-runtime';
 import { assessDerivatives, type DerivativesSnapshot } from '../src/derivatives-intelligence';
 import { synchroniseExchanges, buildLiquidityMap, analyseLiquidations, buildSpecialistDebate, adversarialStrategyTest, evolveStrategies, calculatePortfolioRisk, simulateSmartExecution, makeDecisionEvent, verifyDecisionReplay, recoverAgentState, scoreStrategyGenome, type ExchangeQuote, type DerivativePoint } from '../src/predictive-liquidity-engine';
 
@@ -28,7 +29,7 @@ interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>;get(key:string):Promise<string|null>;delete(key:string):Promise<void>};
 interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; LLM_API_KEYS?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string; TWELVEDATA_API_KEY?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan'|'global-market-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan'|'global-market-scan'|'adaptive-division-scan'|'division-position-monitor';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 type LlmKeyConfig={baseUrl:string;apiKey:string;model:string};
 function configuredLlmKeys(raw?:string):LlmKeyConfig[]{if(!raw)return[];try{const parsed=JSON.parse(raw);if(!Array.isArray(parsed))return[];return parsed.slice(0,5).filter((x:any)=>typeof x?.baseUrl==='string'&&/^https:\/\//.test(x.baseUrl)&&typeof x.apiKey==='string'&&x.apiKey.length>=16&&typeof x.model==='string').map((x:any)=>({baseUrl:x.baseUrl.replace(/\/$/,''),apiKey:x.apiKey,model:x.model}));}catch{return[];}}
@@ -98,8 +99,8 @@ async function closePaperPosition(env:Env,position:any,book:OrderBookSnapshot,re
  const config=JSON.parse(String(position.payload_json||'{}')) as {feeBps?:number};
  const feeBps=Number.isFinite(config.feeBps)?Number(config.feeBps):10,now=Date.now();
  const exit=planPaperLongExit({book,quantity:Number(position.quantity),entryPrice:Number(position.entry_price),entryFee:Number(position.entry_fee),feeBps,now});
- if(!exit.valid||exit.averageExitPrice===null){await env.DB.prepare("UPDATE paper_positions SET status='open' WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,errors:exit.errors};}
- const account=await getPaperAccount(env);if(!account){await env.DB.prepare("UPDATE paper_positions SET status='open' WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,reason:'paper account unavailable'};}
+ if(!exit.valid||exit.averageExitPrice===null){await env.DB.prepare("UPDATE paper_positions SET status='open',closing_since=NULL WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,errors:exit.errors};}
+ const account=await getPaperAccount(env);if(!account){await env.DB.prepare("UPDATE paper_positions SET status='open',closing_since=NULL WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,reason:'paper account unavailable'};}
  const equityBefore=Number(account.equity),equityAfter=equityBefore+exit.netPnl,peak=Math.max(Number(account.peak_equity),equityAfter);
  const dayKey=new Date(now).toISOString().slice(0,10),weekKey=paperWeekKey(now),monthKey=dayKey.slice(0,7);
  const dayStart=account.day_key===dayKey&&Number(account.day_start_equity)>0?Number(account.day_start_equity):equityBefore;
@@ -108,7 +109,7 @@ async function closePaperPosition(env:Env,position:any,book:OrderBookSnapshot,re
  const loss=(start:number)=>start>0?Math.max(0,(start-equityAfter)/start*100):100;
  const openPositions=Math.max(0,Number(account.open_positions)-1),fillId=uuid();
  await env.DB.batch([
-  env.DB.prepare("UPDATE paper_positions SET status='closed',closed_at=?,exit_price=?,exit_fee=?,gross_pnl=?,net_pnl=?,exit_reason=? WHERE position_id=? AND status='closing'").bind(now,exit.averageExitPrice,exit.exitFee,exit.grossPnl,exit.netPnl,reason,position.position_id),
+  env.DB.prepare("UPDATE paper_positions SET status='closed',closing_since=NULL,closed_at=?,exit_price=?,exit_fee=?,gross_pnl=?,net_pnl=?,exit_reason=? WHERE position_id=? AND status='closing'").bind(now,exit.averageExitPrice,exit.exitFee,exit.grossPnl,exit.netPnl,reason,position.position_id),
   env.DB.prepare("INSERT INTO paper_fills(fill_id,position_id,symbol,side,quantity,price,fee,slippage_bps,created_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(fillId,position.position_id,position.symbol,'sell',exit.filledQuantity,exit.averageExitPrice,exit.exitFee,exit.slippageBps,now,JSON.stringify({reason,netPnl:exit.netPnl})),
   env.DB.prepare("INSERT INTO paper_execution_events(event_id,symbol,side,event_type,observed_at,payload_json) VALUES(?,?,?,?,?,?)").bind(uuid(),position.symbol,'sell','paper.position.closed',now,JSON.stringify({positionId:position.position_id,reason,exit})),
   env.DB.prepare("UPDATE paper_accounts SET equity=?,peak_equity=?,daily_loss_pct=?,weekly_loss_pct=?,monthly_loss_pct=?,open_positions=?,day_key=?,day_start_equity=?,week_key=?,week_start_equity=?,month_key=?,month_start_equity=?,updated_at=? WHERE account_id='default'").bind(equityAfter,peak,loss(dayStart),loss(weekStart),loss(monthStart),openPositions,dayKey,dayStart,weekKey,weekStart,monthKey,monthStart,now)
@@ -281,6 +282,120 @@ async function runGlobalMarketScan(env:Env,maxDeepScan=12){
  for(let i=0;i<opportunities.length;i+=100){const batch=opportunities.slice(i,i+100).map(x=>env.DB.prepare('INSERT INTO global_market_opportunities(opportunity_id,run_id,instrument_id,symbol,asset_class,venue,observed_at,price,change_24h_pct,score,direction,chart_json,reasons_json,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(uuid(),runId,x.instrument.id,x.instrument.symbol,x.instrument.assetClass,x.instrument.venue,completedAt,x.instrument.price??null,x.instrument.change24hPct??null,x.score,x.direction,JSON.stringify(x.chart),JSON.stringify(x.reasons),x.instrument.source));await env.DB.batch(batch);}
  await audit(env,'global.market.scan.completed','global-market-scanner',{runId,discovered:instruments.length,deepScanned:deep.length,opportunities:opportunities.length,sourceHealth});
  return {runId,startedAt,completedAt,status:'completed',summary,sourceHealth,opportunities:opportunities.slice(0,100).map(x=>({...x.instrument,chart:x.chart,score:x.score,direction:x.direction,reasons:x.reasons}))};
+}
+
+
+async function divisionAccount(env:Env,division:TradingDivision){return env.DB.prepare('SELECT * FROM division_paper_accounts WHERE division_id=?').bind(division).first<any>();}
+async function closeDivisionPaperPosition(env:Env,position:any,book:OrderBookSnapshot,reason:string){
+ const claimNow=Date.now(),staleClosingBefore=claimNow-60_000,claim=await env.DB.prepare("UPDATE division_paper_positions SET status='closing',closing_since=? WHERE position_id=? AND (status='open' OR (status='closing' AND (closing_since IS NULL OR closing_since<?)))").bind(claimNow,position.position_id,staleClosingBefore).run();
+ if(Number(claim.meta?.changes??0)!==1)return {closed:false,reason:'position already claimed or closed'};
+ const payload=JSON.parse(String(position.payload_json||'{}')),feeBps=Number.isFinite(payload.feeBps)?Number(payload.feeBps):10;
+ const exit=planPaperLongExit({book,quantity:Number(position.quantity),entryPrice:Number(position.entry_price),entryFee:Number(position.entry_fee),feeBps,now:Date.now(),maxSlippageBps:25});
+ if(!exit.valid||exit.averageExitPrice===null){await env.DB.prepare("UPDATE division_paper_positions SET status='open',closing_since=NULL WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,errors:exit.errors};}
+ const account=await divisionAccount(env,position.division_id);
+ if(!account){await env.DB.prepare("UPDATE division_paper_positions SET status='open',closing_since=NULL WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,reason:'division account unavailable'};}
+ const now=Date.now(),equityAfter=Math.max(0,Number(account.equity)+exit.netPnl),peak=Math.max(Number(account.peak_equity),equityAfter),dayKey=new Date(now).toISOString().slice(0,10),dayStart=account.day_key===dayKey&&Number(account.day_start_equity)>0?Number(account.day_start_equity):Number(account.equity),dailyLoss=dayStart>0?Math.max(0,(dayStart-equityAfter)/dayStart*100):100;
+ const riskCash=Math.max(0,Number(payload.riskCash||0)),rMultiple=riskCash>0?exit.netPnl/riskCash:null,fillId=uuid();
+ try{
+  await env.DB.batch([
+  env.DB.prepare("UPDATE division_paper_positions SET status='closed',closing_since=NULL,closed_at=?,exit_price=?,exit_fee=?,gross_pnl=?,net_pnl=?,exit_reason=? WHERE position_id=? AND status='closing'").bind(now,exit.averageExitPrice,exit.exitFee,exit.grossPnl,exit.netPnl,reason,position.position_id),
+  env.DB.prepare("INSERT INTO division_paper_fills(fill_id,position_id,division_id,symbol,side,quantity,price,fee,slippage_bps,created_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(fillId,position.position_id,position.division_id,position.symbol,'sell',exit.filledQuantity,exit.averageExitPrice,exit.exitFee,exit.slippageBps,now,JSON.stringify({reason,netPnl:exit.netPnl})),
+  env.DB.prepare("UPDATE division_paper_accounts SET equity=?,peak_equity=?,daily_loss_pct=?,day_key=?,day_start_equity=?,open_positions=MAX(0,open_positions-1),updated_at=? WHERE division_id=?").bind(equityAfter,peak,dailyLoss,dayKey,dayStart,now,position.division_id),
+  env.DB.prepare("UPDATE division_performance SET closed_at=?,net_pnl_usd=?,r_multiple=?,outcome=? WHERE division_id=? AND trade_id=?").bind(now,exit.netPnl,rMultiple,exit.netPnl>0?'win':exit.netPnl<0?'loss':'breakeven',position.division_id,position.position_id),
+  env.DB.prepare("INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)").bind(uuid(),'adaptive.paper.position.closed','division-paper-execution',now,JSON.stringify({positionId:position.position_id,division:position.division_id,symbol:position.symbol,reason,netPnl:exit.netPnl,rMultiple}))
+   ]);
+ }catch(error){await env.DB.prepare("UPDATE division_paper_positions SET status='open',closing_since=NULL WHERE position_id=? AND status='closing'").bind(position.position_id).run();throw error;}
+ return {closed:true,positionId:position.position_id,division:position.division_id,netPnl:exit.netPnl,rMultiple,reason};
+}
+async function openDivisionPaperPosition(env:Env,division:TradingDivision,assessment:any,evidence:MarketEvidence,book:OrderBookSnapshot,policy:DivisionPolicy){
+ const account=await divisionAccount(env,division);if(!account)return {opened:false,reason:'division paper account not initialized'};
+ const today=new Date().toISOString().slice(0,10);
+ if(account.day_key!==today){await env.DB.prepare('UPDATE division_paper_accounts SET day_key=?,day_start_equity=equity,daily_loss_pct=0,updated_at=? WHERE division_id=?').bind(today,Date.now(),division).run();account.day_key=today;account.day_start_equity=Number(account.equity);account.daily_loss_pct=0;}
+ if(Number(account.daily_loss_pct)>=policy.maxDailyLossPct)return {opened:false,reason:'division daily loss limit reached'};
+ if(Number(account.open_positions)>=policy.maxOpenPositions)return {opened:false,reason:'division open-position limit reached'};
+ if(Number(account.equity)<=0)return {opened:false,reason:'division equity depleted'};
+ const existing=await env.DB.prepare("SELECT position_id FROM division_paper_positions WHERE division_id=? AND symbol=? AND status IN ('open','closing') LIMIT 1").bind(division,evidence.symbol).first<any>();
+ if(existing)return {opened:false,reason:'division already has an open position in this instrument'};
+ const levels=buildLongPaperLevels(evidence,division);if(!levels.valid)return {opened:false,reason:levels.reason};
+ const capitalLimitUsd=policy.maxRiskPerTradePct>0?Number(assessment.riskBudgetUsd)/(policy.maxRiskPerTradePct/100):0,effectiveEquity=Math.min(Number(account.equity),capitalLimitUsd);
+ if(!(effectiveEquity>0))return {opened:false,reason:'division allocation has no deployable capital'};
+ const dayStart=Number(account.day_start_equity||account.equity),reserved=await env.DB.prepare("SELECT COALESCE(SUM(json_extract(payload_json,'$.riskCash')),0) AS risk_cash FROM division_paper_positions WHERE division_id=? AND status IN ('open','closing')").bind(division).first<any>();
+ const reservedRisk=Number(reserved?.risk_cash||0),proposedRisk=effectiveEquity*policy.maxRiskPerTradePct/100;
+ if(dayStart<=0||Number(account.daily_loss_pct)+(reservedRisk+proposedRisk)/dayStart*100>policy.maxDailyLossPct)return {opened:false,reason:'division daily loss budget is reserved by realised loss and open-position stop risk'};
+ const feeBps=10,riskPct=policy.maxRiskPerTradePct,plan=planPaperLongEntry({book,equity:effectiveEquity,stopPrice:levels.stop,targetPrice:levels.target,riskPct,feeBps,maxRiskPct:policy.maxRiskPerTradePct,now:Date.now(),maxSlippageBps:25});
+ if(!plan.valid||plan.averageFillPrice===null)return {opened:false,reason:'division paper risk engine rejected the order',vetoes:plan.errors};
+ const now=Date.now(),positionId=uuid(),fillId=uuid(),dayKey=new Date(now).toISOString().slice(0,10);
+ const reservation=await env.DB.prepare("UPDATE division_paper_accounts SET open_positions=open_positions+1,updated_at=? WHERE division_id=? AND open_positions<? AND equity>0 AND daily_loss_pct<?").bind(now,division,policy.maxOpenPositions,policy.maxDailyLossPct).run();
+ if(Number(reservation.meta?.changes??0)!==1)return {opened:false,reason:'division risk reservation failed or a concurrent limit was reached'};
+ const payload={feeBps,riskCash:plan.riskCash,referencePrice:plan.referencePrice,slippageBps:plan.slippageBps,netRewardRisk:plan.netRewardRisk,decisionScore:assessment.score,observedAt:evidence.observedAt,assetClass:evidence.assetClass,executionVenue:'Binance Spot paper simulation'};
+ try{
+  await env.DB.batch([
+   env.DB.prepare("INSERT INTO division_paper_positions(position_id,division_id,symbol,side,quantity,entry_price,stop_price,target_price,entry_fee,risk_pct,strategy_id,status,opened_at,payload_json) VALUES(?,?,?,'long',?,?,?,?,?,?,?,'open',?,?)").bind(positionId,division,evidence.symbol,plan.quantity,plan.averageFillPrice,levels.stop,levels.target,plan.entryFee,plan.actualRiskPct,assessment.strategy,now,JSON.stringify(payload)),
+   env.DB.prepare("INSERT INTO division_paper_fills(fill_id,position_id,division_id,symbol,side,quantity,price,fee,slippage_bps,created_at,payload_json) VALUES(?,?,?,?,'buy',?,?,?,?,?,?)").bind(fillId,positionId,division,evidence.symbol,plan.quantity,plan.averageFillPrice,plan.entryFee,plan.slippageBps,now,JSON.stringify({referencePrice:plan.referencePrice,notional:plan.notional})),
+   env.DB.prepare("INSERT INTO division_performance(division_id,trade_id,strategy_id,symbol,opened_at,source) VALUES(?,?,?,?,?,'paper')").bind(division,positionId,assessment.strategy,evidence.symbol,now),
+   env.DB.prepare("INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)").bind(uuid(),'adaptive.paper.position.opened','division-paper-execution',now,JSON.stringify({positionId,division,symbol:evidence.symbol,strategy:assessment.strategy,score:assessment.score,riskPct:plan.actualRiskPct,stop:levels.stop,target:levels.target}))
+  ]);
+ }catch(error){await env.DB.prepare("UPDATE division_paper_accounts SET open_positions=MAX(0,open_positions-1),updated_at=? WHERE division_id=?").bind(Date.now(),division).run();throw error;}
+ return {opened:true,position:{positionId,division,symbol:evidence.symbol,strategy:assessment.strategy,entryPrice:plan.averageFillPrice,stopPrice:levels.stop,targetPrice:levels.target,quantity:plan.quantity,riskPct:plan.actualRiskPct,netRewardRisk:plan.netRewardRisk}};
+}
+
+async function reconcileDivisionPaperAccounts(env:Env){
+ const rows=await env.DB.prepare('SELECT division_id,initial_equity,equity,peak_equity,open_positions FROM division_paper_accounts').all<any>(),repairs:any[]=[];
+ for(const account of rows.results){
+  const division=String(account.division_id);
+  const aggregate=await env.DB.prepare("SELECT SUM(CASE WHEN status IN ('open','closing') THEN 1 ELSE 0 END) AS open_count,COALESCE(SUM(CASE WHEN status='closed' THEN net_pnl ELSE 0 END),0) AS realised_pnl FROM division_paper_positions WHERE division_id=?").bind(division).first<any>();
+  const expectedEquity=Math.max(0,Number(account.initial_equity)+Number(aggregate?.realised_pnl||0)),openCount=Number(aggregate?.open_count||0),mismatch=Math.abs(expectedEquity-Number(account.equity))>0.000001||openCount!==Number(account.open_positions);
+  await env.DB.prepare("INSERT OR IGNORE INTO division_performance(division_id,trade_id,strategy_id,symbol,opened_at,closed_at,net_pnl_usd,r_multiple,outcome,source) SELECT division_id,position_id,strategy_id,symbol,opened_at,closed_at,net_pnl,CASE WHEN json_extract(payload_json,'$.riskCash')>0 THEN net_pnl/json_extract(payload_json,'$.riskCash') ELSE NULL END,CASE WHEN net_pnl>0 THEN 'win' WHEN net_pnl<0 THEN 'loss' ELSE 'breakeven' END,'paper' FROM division_paper_positions WHERE division_id=?").bind(division).run();
+  if(mismatch){const peak=Math.max(Number(account.peak_equity),expectedEquity);await env.DB.prepare('UPDATE division_paper_accounts SET equity=?,peak_equity=?,open_positions=?,updated_at=? WHERE division_id=?').bind(expectedEquity,peak,openCount,Date.now(),division).run();repairs.push({division,equityBefore:Number(account.equity),equityAfter:expectedEquity,openBefore:Number(account.open_positions),openAfter:openCount});}
+ }
+ if(repairs.length)await audit(env,'adaptive.paper.reconciliation.repaired','division-paper-reconciler',{repairs});
+ return {checked:rows.results.length,repaired:repairs.length,repairs};
+}
+
+
+async function monitorDivisionPositionsForSymbol(env:Env,symbol:string,book:OrderBookSnapshot){
+ const open=await env.DB.prepare("SELECT * FROM division_paper_positions WHERE symbol=? AND (status='open' OR (status='closing' AND (closing_since IS NULL OR closing_since<?)))").bind(symbol,Date.now()-60_000).all<any>(),monitor:any[]=[];
+ for(const position of open.results){
+  const entry=Number(position.entry_price),riskDistance=entry-Number(position.stop_price),payload=JSON.parse(String(position.payload_json||'{}')),feeBps=Number.isFinite(payload.feeBps)?Number(payload.feeBps):10;
+  if(riskDistance>0&&book.mid>=entry+riskDistance&&Number(position.stop_price)<entry){
+   const breakEven=entry*(1+feeBps/10000),moved=await env.DB.prepare("UPDATE division_paper_positions SET stop_price=? WHERE position_id=? AND status='open' AND stop_price<?").bind(breakEven,position.position_id,breakEven).run();
+   if(Number(moved.meta?.changes??0)===1){position.stop_price=breakEven;monitor.push({positionId:position.position_id,action:'break-even-stop-raised',stopPrice:breakEven});}
+  }
+  const reason=position.status==='closing'?'recovered-closing':book.mid<=Number(position.stop_price)?'stop-loss':book.mid>=Number(position.target_price)?'take-profit':null;
+  if(reason)monitor.push(await closeDivisionPaperPosition(env,position,book,reason));
+ }
+ return monitor;
+}
+async function runDivisionPositionMonitor(env:Env){
+ const rows=await env.DB.prepare("SELECT DISTINCT symbol FROM division_paper_positions WHERE status='open' OR (status='closing' AND (closing_since IS NULL OR closing_since<?)) ORDER BY symbol LIMIT 20").bind(Date.now()-60_000).all<any>(),results:any[]=[];
+ for(const row of rows.results){const symbol=String(row.symbol);try{const bundle=await marketBundle(env,symbol);results.push({symbol,actions:await monitorDivisionPositionsForSymbol(env,symbol,bundle.book)});}catch(error){results.push({symbol,error:String(error).slice(0,200)});}}
+ return {observedAt:Date.now(),symbols:rows.results.length,results,liveTradingEnabled:false};
+}
+
+async function runAdaptiveDivisionScan(env:Env){
+ const now=Date.now(),reconciliation=await reconcileDivisionPaperAccounts(env),master=await getPaperAccount(env),divisionRows=await env.DB.prepare('SELECT * FROM trading_divisions ORDER BY division_id').all<any>();
+ const policies:Partial<Record<TradingDivision,DivisionPolicy>>={},accounts:Record<string,any>={};
+ for(const row of divisionRows.results){const id=String(row.division_id) as TradingDivision;if(id!=='scalping'&&id!=='day-trading')continue;const account=await divisionAccount(env,id),enabled=Number(row.enabled)===1&&Number(row.allocation_usd)>0,divisionCapital=enabled?Math.min(Number(row.allocation_usd),Number(account?.equity||0)):0;policies[id]={...DEFAULT_DIVISION_POLICIES[id],allocationUsd:divisionCapital,maxRiskPerTradePct:Number(row.max_risk_per_trade_pct),maxDailyLossPct:Number(row.max_daily_loss_pct),maxOpenPositions:Number(row.max_open_positions),minScore:divisionCapital>0?DEFAULT_DIVISION_POLICIES[id].minScore:101};accounts[id]=account;}
+ const allocation=Object.values(policies).reduce((sum,p)=>sum+Number(p?.allocationUsd||0),0),totalCapital=Math.max(0,Math.min(Number(master?.equity||0),allocation));
+ const candidates=await env.DB.prepare("SELECT instrument_id,symbol,price,score,observed_at,venue FROM global_market_opportunities WHERE asset_class='crypto-spot' AND venue='Binance Spot' AND observed_at>? AND score>=18 ORDER BY score DESC,observed_at DESC LIMIT 6").bind(now-20*60*1000).all<any>();
+ const symbols=[...new Set(candidates.results.map((x:any)=>String(x.symbol)))].filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,6);
+ const results:any[]=[];
+ for(const symbol of symbols){
+  try{
+   const candidate=candidates.results.find((x:any)=>x.symbol===symbol);
+   const bundle=await marketBundle(env,symbol);
+   const [oneRaw,fiveRaw,hourRaw]=await Promise.all(['1m','5m','1h'].map(interval=>getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=120')));
+   const observedAt=bundle.book.timestamp,convert=(rows:Kline[])=>rows.map(k=>({openTime:Number(k[0]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5]),closeTime:Number(k[6])})).filter(x=>x.closeTime<observedAt);
+   const evidence=buildDivisionMarketEvidence({symbol,assetClass:'crypto-spot',candles1m:convert(oneRaw),candles5m:convert(fiveRaw),candles1h:convert(hourRaw),book:bundle.book,observedAt,feeBps:10});
+   const decision=evaluateAdaptiveTrading(evidence,{totalCapitalUsd:totalCapital,policies}),decisionId=uuid();
+   await env.DB.prepare('INSERT INTO adaptive_trading_decisions(decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json,live_trading_enabled) VALUES(?,?,?,?,?,?,?,0)').bind(decisionId,symbol,evidence.observedAt,decision.mode,JSON.stringify(decision.selected),JSON.stringify({scalping:decision.scalping,dayTrading:decision.dayTrading}),JSON.stringify(decision.rationale)).run();
+   const executions:any[]=[];
+   if(env.AUTO_PAPER_ENABLED==='true'&&totalCapital>0){for(const selected of decision.selected){const policy=policies[selected.division];if(policy)executions.push(await openDivisionPaperPosition(env,selected.division,selected,evidence,bundle.book,policy));}}
+   await audit(env,'adaptive-trading.autonomous-evaluation','adaptive-division-runtime',{decisionId,symbol,mode:decision.mode,selected:decision.selected.map(x=>x.division),standDown:decision.standDown,executions});
+   results.push({symbol,globalScore:candidate.score,decisionId,mode:decision.mode,selected:decision.selected.map(x=>x.division),standDown:decision.standDown,executions});
+  }catch(error){results.push({symbol,error:String(error).slice(0,240)});}
+ }
+ return {observedAt:now,candidates:candidates.results.length,analysed:symbols.length,results,reconciliation,divisions:Object.fromEntries(Object.entries(accounts).map(([id,a])=>[id,{equity:Number(a?.equity||0),openPositions:Number(a?.open_positions||0),dailyLossPct:Number(a?.daily_loss_pct||0)}])),paperEnabled:env.AUTO_PAPER_ENABLED==='true',liveTradingEnabled:false,objective:{aspirationalReturnPct:98,guaranteed:false,priority:'capital-preservation'}};
 }
 
 async function route(request:Request,env:Env):Promise<Response>{
@@ -535,11 +650,18 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json(response);
  }
  if(path==='/api/backtests'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT run_id,symbol,interval_name,strategy_id,strategy_version,completed_at,metrics_json FROM backtest_runs ORDER BY completed_at DESC LIMIT 50').all();return json({runs:rows.results});}
+ if(path==='/api/adaptive-trading/run'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  if(env.AUTO_PAPER_ENABLED!=='true')return json({error:'Automatic paper execution is disabled by the server safety switch',liveTradingEnabled:false},409);
+  return json(await runAdaptiveDivisionScan(env));
+ }
  if(path==='/api/adaptive-trading/status'&&request.method==='GET'){
   const divisions=await env.DB.prepare('SELECT * FROM trading_divisions ORDER BY division_id').all<any>();
   const decisions=await env.DB.prepare('SELECT decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json FROM adaptive_trading_decisions ORDER BY observed_at DESC LIMIT 30').all<any>();
-  const performance=await env.DB.prepare("SELECT division_id,COUNT(*) AS trades,SUM(CASE WHEN net_pnl_usd>0 THEN 1 ELSE 0 END) AS wins,COALESCE(SUM(net_pnl_usd),0) AS netPnl,MAX(closed_at) AS lastClosedAt FROM division_performance WHERE source='paper' GROUP BY division_id").all<any>();
-  return json({ok:true,divisions:divisions.results,performance:performance.results,decisions:decisions.results.map((r:any)=>({...r,selected:JSON.parse(r.selected_json),assessments:JSON.parse(r.assessments_json),rationale:JSON.parse(r.rationale_json)})),kpi:{aspirationalReturnPct:98,guaranteed:false,priority:'capital-preservation'},liveTradingEnabled:false});
+  const performance=await env.DB.prepare("SELECT division_id,COUNT(*) AS trades,SUM(CASE WHEN net_pnl_usd>0 THEN 1 ELSE 0 END) AS wins,SUM(CASE WHEN net_pnl_usd<0 THEN 1 ELSE 0 END) AS losses,COALESCE(SUM(net_pnl_usd),0) AS netPnl,AVG(r_multiple) AS avgR,MAX(closed_at) AS lastClosedAt FROM division_performance WHERE source='paper' AND closed_at IS NOT NULL GROUP BY division_id").all<any>();
+  const accounts=await env.DB.prepare('SELECT * FROM division_paper_accounts ORDER BY division_id').all<any>();
+  const positions=await env.DB.prepare("SELECT position_id,division_id,symbol,side,quantity,entry_price,stop_price,target_price,strategy_id,status,opened_at FROM division_paper_positions WHERE status IN ('open','closing') ORDER BY opened_at DESC LIMIT 50").all<any>();
+  return json({ok:true,divisions:divisions.results,accounts:accounts.results,openPositions:positions.results,performance:performance.results,decisions:decisions.results.map((r:any)=>({...r,selected:JSON.parse(r.selected_json),assessments:JSON.parse(r.assessments_json),rationale:JSON.parse(r.rationale_json)})),kpi:{aspirationalReturnPct:98,guaranteed:false,priority:'capital-preservation'},automaticPaperEnabled:env.AUTO_PAPER_ENABLED==='true',liveTradingEnabled:false});
  }
  if(path==='/api/adaptive-trading/evaluate'&&request.method==='POST'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
@@ -630,6 +752,12 @@ export class AgentOrchestrator {
      queue.push(...roleTasks);
      await this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify({analysisId,roleTasks:roleTasks.length}),task.id).run();
      await audit(this.env,'institutional.scheduled.scan.completed','institutional-intelligence-engine',{analysisId,symbol:task.symbol,roleTasks:roleTasks.length});
+    }else if(task.kind==='division-position-monitor'){
+     const result=await runDivisionPositionMonitor(this.env);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'risk:division-position-monitor','division-position-monitor',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    }else if(task.kind==='adaptive-division-scan'){
+     const result=await runAdaptiveDivisionScan(this.env);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'adaptive:division-arbitrator','adaptive-division-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-strategy-scan'){
      if(this.env.AUTO_PAPER_ENABLED!=='true')throw new Error('Automatic paper strategy workflow is disabled');
      const result=await runInstitutionalStrategyWorkflow(this.env,task.symbol,true);

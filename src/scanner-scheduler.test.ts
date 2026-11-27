@@ -4,18 +4,20 @@ const idFactory=()=>{let n=0;return()=>String(++n);};
 describe('scanner scheduling capacity',()=>{
  it('schedules only lightweight market scans during ordinary minutes',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,2),true,idFactory());
-  expect(tasks).toHaveLength(3);expect(tasks.every(t=>t.kind==='market-scan')).toBe(true);
+  expect(tasks).toHaveLength(4);expect(tasks.filter(t=>t.kind==='market-scan')).toHaveLength(3);expect(tasks.filter(t=>t.kind==='division-position-monitor')).toHaveLength(1);
  });
  it('schedules institutional and AMD work in a bounded five-minute burst',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,5),false,idFactory());
-  expect(tasks).toHaveLength(9);
+  expect(tasks).toHaveLength(11);
   expect(tasks.filter(t=>t.kind==='institutional-scan')).toHaveLength(3);
   expect(tasks.filter(t=>t.kind==='amd-forward-scan')).toHaveLength(3);
+  expect(tasks.filter(t=>t.kind==='adaptive-division-scan')).toHaveLength(1);
  });
  it('adds strategy scans only when explicitly enabled',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,5),true,idFactory());
-  expect(tasks).toHaveLength(12);
+  expect(tasks).toHaveLength(14);
   expect(tasks.filter(t=>t.kind==='institutional-strategy-scan')).toHaveLength(3);
+  expect(tasks.filter(t=>t.kind==='adaptive-division-scan')).toHaveLength(1);
   expect(SCANNER_TASKS_PER_ALARM).toBe(16);
  });
  it('schedules one global multi-asset discovery task every fifteen minutes',()=>{const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,15),false,idFactory());expect(tasks.filter(t=>t.kind==='global-market-scan')).toHaveLength(1);});
