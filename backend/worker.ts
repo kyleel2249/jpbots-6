@@ -808,6 +808,9 @@ export class AgentOrchestrator {
      const result=await runAmdForwardScan(this.env,task.symbol);
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'institutional:AMD Session Phase Intelligence','amd-forward-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
+     const enabledRole=await this.env.DB.prepare('SELECT enabled FROM agent_state WHERE role_id=?').bind(task.roleId).first<any>();
+     if(enabledRole?.enabled!==1){await this.env.DB.prepare("UPDATE agent_tasks SET status='cancelled',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify({reason:'Agent was deactivated before execution'}),task.id).run();}
+     else{
      const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
      const evidence=handlerForInstitutionalFinding(finding,rt);
      await this.env.DB.batch([
@@ -826,6 +829,7 @@ export class AgentOrchestrator {
       const workflow=analysis?planAutonomousPaperWorkflow({analysis,runtimeDecision:decision,strategyValidated:false,multiTimeframeAligned:false,marketDataFresh:true,executionEconomicsValid:false,capitalApproved:false,entry,stop,target}):{ready:false,mode:'paper-only',liveExecutionEnabled:false,entry:null,stop:null,target:null,reasons:['Persisted institutional analysis unavailable']};
       await this.env.DB.prepare("INSERT OR IGNORE INTO paper_strategy_runs(run_id,symbol,strategy_id,status,started_at,completed_at,analysis_json,decision_json) VALUES(?,?,?,'analysis-only',?,?,?,?)").bind(task.correlationId,task.symbol,'institutional-evidence-arbitration',task.createdAt,Date.now(),JSON.stringify({correlationId:task.correlationId,evidenceCount:evidenceRows.length,analysisId:task.correlationId}),JSON.stringify({...decision,workflow,approved:false,liveTradingEnabled:false})).run();
       await this.env.DB.prepare("INSERT INTO agent_messages(message_id,correlation_id,from_role,to_role,message_type,created_at,payload_json) VALUES(?,?,?,?,?,?,?)").bind(uuid(),task.correlationId,'institutional:supervisor','paper-strategy-workflow','supervisor.decision',Date.now(),JSON.stringify(decision)).run();
+     }
      }
     }else throw new Error('Unsupported or malformed runtime task');
     await this.env.DB.prepare('DELETE FROM agent_task_leases WHERE task_id=?').bind(task.id).run();
