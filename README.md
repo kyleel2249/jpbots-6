@@ -31,7 +31,7 @@ The catalogue includes 10 scalping bots, 10 day-trading bots and 19 advanced str
 - **Cloudflare Worker API** in `backend/worker.ts`, deployed separately from the Vite/Pages dashboard.
 - **Cloudflare D1** migrations for market snapshots, order-book snapshots, scan decisions, agent tasks/state, portfolio account state, trade memory, strategy versions, audit events, backtest runs and paper-execution event records.
 - **Durable Object orchestration queue** with persistent queued tasks and alarm-driven processing.
-- **Scheduled market scanning** every minute for BTCUSDT, ETHUSDT and SOLUSDT. The queue runs a real public-feed scanner independently of the browser tab.
+- **Scheduled market scanning** every minute for BTCUSDT, ETHUSDT and SOLUSDT. The queue runs the market scanner and institutional analysis pipeline independently of the browser tab, then fans institutional findings out to ten role tasks per symbol.
 - **Real Binance Spot public REST data** for 24-hour tickers, OHLCV candles, order-book depth and aggregate trades. The scanner calculates 1m EMA/RSI and 5m/15m/1h/4h EMA alignment, builds a structured market report and evaluates order-book evidence.
 - **Real DexScreener token-pair lookup** for a supplied Solana token mint. This is read-only lookup, not a complete new-pair stream or DEX execution adapter.
 - **Historical backtesting API** using Binance candles and a spot long-only EMA crossover research strategy. Fills are modelled at the next candle open; configurable fee and slippage assumptions are applied on entry and exit; intratrade favourable/adverse excursions and drawdown are marked using candle highs/lows; results include net P&L, win rate, profit factor, expectancy and a 70/30 in-sample/out-of-sample split.
