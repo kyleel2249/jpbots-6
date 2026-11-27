@@ -29,7 +29,7 @@ interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>;get(key:string):Promise<string|null>;delete(key:string):Promise<void>};
 interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; LLM_API_KEYS?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string; TWELVEDATA_API_KEY?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan'|'global-market-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan'|'global-market-scan'|'adaptive-division-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 type LlmKeyConfig={baseUrl:string;apiKey:string;model:string};
 function configuredLlmKeys(raw?:string):LlmKeyConfig[]{if(!raw)return[];try{const parsed=JSON.parse(raw);if(!Array.isArray(parsed))return[];return parsed.slice(0,5).filter((x:any)=>typeof x?.baseUrl==='string'&&/^https:\/\//.test(x.baseUrl)&&typeof x.apiKey==='string'&&x.apiKey.length>=16&&typeof x.model==='string').map((x:any)=>({baseUrl:x.baseUrl.replace(/\/$/,''),apiKey:x.apiKey,model:x.model}));}catch{return[];}}
@@ -329,8 +329,22 @@ async function openDivisionPaperPosition(env:Env,division:TradingDivision,assess
  }catch(error){await env.DB.prepare("UPDATE division_paper_accounts SET open_positions=MAX(0,open_positions-1),updated_at=? WHERE division_id=?").bind(Date.now(),division).run();throw error;}
  return {opened:true,position:{positionId,division,symbol:evidence.symbol,strategy:assessment.strategy,entryPrice:plan.averageFillPrice,stopPrice:levels.stop,targetPrice:levels.target,quantity:plan.quantity,riskPct:plan.actualRiskPct,netRewardRisk:plan.netRewardRisk}};
 }
+
+async function reconcileDivisionPaperAccounts(env:Env){
+ const rows=await env.DB.prepare('SELECT division_id,initial_equity,equity,peak_equity,open_positions FROM division_paper_accounts').all<any>(),repairs:any[]=[];
+ for(const account of rows.results){
+  const division=String(account.division_id);
+  const aggregate=await env.DB.prepare("SELECT SUM(CASE WHEN status IN ('open','closing') THEN 1 ELSE 0 END) AS open_count,COALESCE(SUM(CASE WHEN status='closed' THEN net_pnl ELSE 0 END),0) AS realised_pnl FROM division_paper_positions WHERE division_id=?").bind(division).first<any>();
+  const expectedEquity=Math.max(0,Number(account.initial_equity)+Number(aggregate?.realised_pnl||0)),openCount=Number(aggregate?.open_count||0),mismatch=Math.abs(expectedEquity-Number(account.equity))>0.000001||openCount!==Number(account.open_positions);
+  await env.DB.prepare("INSERT OR IGNORE INTO division_performance(division_id,trade_id,strategy_id,symbol,opened_at,closed_at,net_pnl_usd,r_multiple,outcome,source) SELECT division_id,position_id,strategy_id,symbol,opened_at,closed_at,net_pnl,CASE WHEN json_extract(payload_json,'$.riskCash')>0 THEN net_pnl/json_extract(payload_json,'$.riskCash') ELSE NULL END,CASE WHEN net_pnl>0 THEN 'win' WHEN net_pnl<0 THEN 'loss' ELSE 'breakeven' END,'paper' FROM division_paper_positions WHERE division_id=?").bind(division).run();
+  if(mismatch){const peak=Math.max(Number(account.peak_equity),expectedEquity);await env.DB.prepare('UPDATE division_paper_accounts SET equity=?,peak_equity=?,open_positions=?,updated_at=? WHERE division_id=?').bind(expectedEquity,peak,openCount,Date.now(),division).run();repairs.push({division,equityBefore:Number(account.equity),equityAfter:expectedEquity,openBefore:Number(account.open_positions),openAfter:openCount});}
+ }
+ if(repairs.length)await audit(env,'adaptive.paper.reconciliation.repaired','division-paper-reconciler',{repairs});
+ return {checked:rows.results.length,repaired:repairs.length,repairs};
+}
+
 async function runAdaptiveDivisionScan(env:Env){
- const now=Date.now(),master=await getPaperAccount(env),divisionRows=await env.DB.prepare('SELECT * FROM trading_divisions WHERE enabled=1 ORDER BY division_id').all<any>();
+ const now=Date.now(),reconciliation=await reconcileDivisionPaperAccounts(env),master=await getPaperAccount(env),divisionRows=await env.DB.prepare('SELECT * FROM trading_divisions WHERE enabled=1 ORDER BY division_id').all<any>();
  const policies:Partial<Record<TradingDivision,DivisionPolicy>>={},accounts:Record<string,any>={};
  for(const row of divisionRows.results){const id=String(row.division_id) as TradingDivision;if(id!=='scalping'&&id!=='day-trading')continue;policies[id]={...DEFAULT_DIVISION_POLICIES[id],allocationUsd:Number(row.allocation_usd),maxRiskPerTradePct:Number(row.max_risk_per_trade_pct),maxDailyLossPct:Number(row.max_daily_loss_pct),maxOpenPositions:Number(row.max_open_positions)};accounts[id]=await divisionAccount(env,id);}
  const allocation=Object.values(policies).reduce((sum,p)=>sum+Number(p?.allocationUsd||0),0),divisionEquity=Object.values(accounts).reduce((sum,a)=>sum+Number(a?.equity||0),0),totalCapital=Math.max(0,Math.min(Number(master?.equity||0),divisionEquity,allocation));
@@ -356,7 +370,7 @@ async function runAdaptiveDivisionScan(env:Env){
    results.push({symbol,globalScore:candidate.score,decisionId,mode:decision.mode,selected:decision.selected.map(x=>x.division),standDown:decision.standDown,executions,monitored:monitor});
   }catch(error){results.push({symbol,error:String(error).slice(0,240)});}
  }
- return {observedAt:now,candidates:candidates.results.length,analysed:symbols.length,results,divisions:Object.fromEntries(Object.entries(accounts).map(([id,a])=>[id,{equity:Number(a?.equity||0),openPositions:Number(a?.open_positions||0),dailyLossPct:Number(a?.daily_loss_pct||0)}])),paperEnabled:env.AUTO_PAPER_ENABLED==='true',liveTradingEnabled:false,objective:{aspirationalReturnPct:98,guaranteed:false,priority:'capital-preservation'}};
+ return {observedAt:now,candidates:candidates.results.length,analysed:symbols.length,results,reconciliation,divisions:Object.fromEntries(Object.entries(accounts).map(([id,a])=>[id,{equity:Number(a?.equity||0),openPositions:Number(a?.open_positions||0),dailyLossPct:Number(a?.daily_loss_pct||0)}])),paperEnabled:env.AUTO_PAPER_ENABLED==='true',liveTradingEnabled:false,objective:{aspirationalReturnPct:98,guaranteed:false,priority:'capital-preservation'}};
 }
 
 async function route(request:Request,env:Env):Promise<Response>{
@@ -713,6 +727,9 @@ export class AgentOrchestrator {
      queue.push(...roleTasks);
      await this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify({analysisId,roleTasks:roleTasks.length}),task.id).run();
      await audit(this.env,'institutional.scheduled.scan.completed','institutional-intelligence-engine',{analysisId,symbol:task.symbol,roleTasks:roleTasks.length});
+    }else if(task.kind==='adaptive-division-scan'){
+     const result=await runAdaptiveDivisionScan(this.env);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'adaptive:division-arbitrator','adaptive-division-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-strategy-scan'){
      if(this.env.AUTO_PAPER_ENABLED!=='true')throw new Error('Automatic paper strategy workflow is disabled');
      const result=await runInstitutionalStrategyWorkflow(this.env,task.symbol,true);
