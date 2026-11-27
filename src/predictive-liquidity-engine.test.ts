@@ -11,5 +11,5 @@ describe('predictive liquidity engine',()=>{
  it('rejects incomplete smart fills and models costs',()=>{const x=simulateSmartExecution({side:'buy',quantity:3,levels:[{price:101,quantity:2}],referencePrice:100,feeBps:10,maxSlippageBps:20,latencyMs:100});expect(x.complete).toBe(false);expect(x.accepted).toBe(false);});
  it('detects deterministic replay tampering',()=>{const a=makeDecisionEvent(1,now,'signal',{b:2,a:1}),b=makeDecisionEvent(2,now+1,'risk',{ok:false},a.hash);expect(verifyDecisionReplay([a,b]).valid).toBe(true);expect(verifyDecisionReplay([{...a,payload:{a:2}}]).valid).toBe(false);});
  it('recovers expired leases without retrying terminal states',()=>{expect(recoverAgentState({status:'running',attempts:1,leaseUntil:now-1,maxAttempts:3},now).action).toBe('retry');expect(recoverAgentState({status:'completed',attempts:1,leaseUntil:0,maxAttempts:3},now).action).toBe('no-op');});
- it('builds liquidity map',()=>{expect(buildLiquidityMap([{exchange:'x',symbol:'BTCUSDT',observedAt:now,bid:100,ask:101,bidDepth:3,askDepth:1,source:'x'}]).length).toBeGreaterThan(0);});
+ it('builds liquidity map',()=>{expect(buildLiquidityMap([{exchange:'x',symbol:'BTCUSDT',observedAt:now,bid:100,ask:101,bidDepth:3,askDepth:1,source:'x'}],100).length).toBeGreaterThan(0);});
 });
