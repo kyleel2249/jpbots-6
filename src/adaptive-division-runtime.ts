@@ -10,6 +10,7 @@ const mean=(values:number[])=>values.length?values.reduce((a,b)=>a+b,0)/values.l
 const direction=(values:number[]):Direction=>{
   if(values.length<22)return 'neutral';
   const fast=mean(values.slice(-9)),slow=mean(values.slice(-21));
+  if(!(slow>0))return 'neutral';
   const delta=(fast-slow)/slow;
   return delta>0.00015?'long':delta< -0.00015?'short':'neutral';
 };
@@ -37,10 +38,11 @@ const sweep=(rows:Candle[],side:'long'|'short')=>{
 };
 export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvidence{
   const now=input.observedAt,book=input.book,mid=book.mid;
-  if(!Number.isFinite(mid)||mid<=0||!book.bids.length||!book.asks.length)throw new Error('A valid two-sided order book is required');
-  const one=input.candles1m.filter(c=>c.closeTime===undefined||c.closeTime<now);
-  const five=input.candles5m.filter(c=>c.closeTime===undefined||c.closeTime<now);
-  const hour=input.candles1h.filter(c=>c.closeTime===undefined||c.closeTime<now);
+  if(!Number.isFinite(now)||!Number.isFinite(mid)||mid<=0||!Number.isFinite(book.timestamp)||book.timestamp>now||!book.bids.length||!book.asks.length)throw new Error('A valid, timestamped two-sided order book is required');
+  const valid=(rows:Candle[])=>rows.filter(c=>(c.closeTime===undefined||c.closeTime<now)&&[c.openTime,c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite)&&c.low>0&&c.high>=c.low&&c.close>0&&c.volume>=0).sort((a,b)=>a.openTime-b.openTime);
+  const one=valid(input.candles1m),five=valid(input.candles5m),hour=valid(input.candles1h);
+  if(!Number.isFinite(input.feeBps??10)||(input.feeBps??10)<0)throw new Error('Invalid paper fee assumption');
+  if(book.bids[0].price<=0||book.asks[0].price<=book.bids[0].price)throw new Error('Crossed or invalid order book');
   if(one.length<30||five.length<30||hour.length<22)throw new Error('Insufficient closed candles for independent division evidence');
   const scalpDirection=direction(one.map(c=>c.close)),dayDirection=direction(five.map(c=>c.close))===direction(hour.map(c=>c.close))?direction(five.map(c=>c.close)):'neutral';
   const bid=book.bids[0].price,ask=book.asks[0].price,spreadBps=(ask-bid)/mid*10000;
@@ -50,7 +52,6 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
   const longFvg=hasBullishFvg(five),shortFvg=hasBearishFvg(five),dayFvg=dayDirection==='short'?shortFvg:longFvg;
   const daySweep=sweep(five,dayDirection==='short'?'short':'long');
   const scalpSweep=sweep(one,scalpDirection==='short'?'short':'long');
-  const trend1=direction(five.map(c=>c.close)),trend2=direction(hour.map(c=>c.close));
   const dayImbalance=imbalance(book),scalpImbalance=imbalance(book);
   const vwapAligned=dayDirection==='long'?mid>=vwap(five):dayDirection==='short'?mid<=vwap(five):false;
   return {
@@ -62,7 +63,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     volatilityPct:atrPct(one),volumeRatio:baseline>0?recent/baseline:0,
     trendAlignment:scalpDirection==='long'?1:scalpDirection==='short'?-1:0,
     orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:atrPct(five),scalpingAtrPct:atrPct(one),dayTradingAtrPct:atrPct(five),
-    dataAgeMs:0,sessionEligible:input.sessionEligible??true,
+    dataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
     fvg:dayFvg||longFvg||shortFvg,liquiditySweep:daySweep||scalpSweep,
     marketStructureShift:(dayDirection==='long'&&five.at(-1)!.close>Math.max(...five.slice(-12,-1).map(c=>c.high)))||(dayDirection==='short'&&five.at(-1)!.close<Math.min(...five.slice(-12,-1).map(c=>c.low))),
     vwapAligned,fundingExtreme:false
