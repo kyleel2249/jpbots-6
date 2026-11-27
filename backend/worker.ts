@@ -377,9 +377,8 @@ async function runAdaptiveDivisionScan(env:Env){
  const policies:Partial<Record<TradingDivision,DivisionPolicy>>={},accounts:Record<string,any>={};
  for(const row of divisionRows.results){const id=String(row.division_id) as TradingDivision;if(id!=='scalping'&&id!=='day-trading')continue;policies[id]={...DEFAULT_DIVISION_POLICIES[id],allocationUsd:Number(row.allocation_usd),maxRiskPerTradePct:Number(row.max_risk_per_trade_pct),maxDailyLossPct:Number(row.max_daily_loss_pct),maxOpenPositions:Number(row.max_open_positions)};accounts[id]=await divisionAccount(env,id);}
  const allocation=Object.values(policies).reduce((sum,p)=>sum+Number(p?.allocationUsd||0),0),divisionEquity=Object.values(accounts).reduce((sum,a)=>sum+Number(a?.equity||0),0),totalCapital=Math.max(0,Math.min(Number(master?.equity||0),divisionEquity,allocation));
- const candidates=await env.DB.prepare("SELECT instrument_id,symbol,price,score,observed_at,venue FROM global_market_opportunities WHERE asset_class='crypto-spot' AND venue='Binance Spot' AND observed_at>? AND score>=18 ORDER BY score DESC,observed_at DESC LIMIT 8").bind(now-20*60*1000).all<any>();
- const openRows=await env.DB.prepare("SELECT DISTINCT symbol FROM division_paper_positions WHERE status IN ('open','closing') LIMIT 20").all<any>();
- const symbols=[...new Set([...candidates.results.map((x:any)=>String(x.symbol)),...openRows.results.map((x:any)=>String(x.symbol))])].filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,20);
+ const candidates=await env.DB.prepare("SELECT instrument_id,symbol,price,score,observed_at,venue FROM global_market_opportunities WHERE asset_class='crypto-spot' AND venue='Binance Spot' AND observed_at>? AND score>=18 ORDER BY score DESC,observed_at DESC LIMIT 6").bind(now-20*60*1000).all<any>();
+ const symbols=[...new Set(candidates.results.map((x:any)=>String(x.symbol)))].filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,6);
  const results:any[]=[];
  for(const symbol of symbols){
   try{
