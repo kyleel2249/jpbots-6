@@ -12,6 +12,8 @@ import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwa
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 import { assessAdvancedMarket } from '../src/advanced-intelligence';
+import { assessDerivatives, type DerivativesSnapshot } from '../src/derivatives-intelligence';
+import { synchroniseExchanges, buildLiquidityMap, analyseLiquidations, buildSpecialistDebate, adversarialStrategyTest, evolveStrategies, calculatePortfolioRisk, simulateSmartExecution, makeDecisionEvent, verifyDecisionReplay, recoverAgentState, scoreStrategyGenome, type ExchangeQuote, type DerivativePoint } from '../src/predictive-liquidity-engine';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -21,10 +23,13 @@ interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>;get(key:string):Promise<string|null>;delete(key:string):Promise<void>};
-interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
+interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; LLM_API_KEYS?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+type LlmKeyConfig={baseUrl:string;apiKey:string;model:string};
+function configuredLlmKeys(raw?:string):LlmKeyConfig[]{if(!raw)return[];try{const parsed=JSON.parse(raw);if(!Array.isArray(parsed))return[];return parsed.slice(0,5).filter((x:any)=>typeof x?.baseUrl==='string'&&/^https:\/\//.test(x.baseUrl)&&typeof x.apiKey==='string'&&x.apiKey.length>=16&&typeof x.model==='string').map((x:any)=>({baseUrl:x.baseUrl.replace(/\/$/,''),apiKey:x.apiKey,model:x.model}));}catch{return[];}}
+function llmBinding(env:Env):WorkersAiBinding|null{const keys=configuredLlmKeys(env.LLM_API_KEYS);if(!keys.length&&!env.AI)return null;return {run:async(model,input)=>{const errors:string[]=[];for(let i=0;i<keys.length;i++){const key=keys[i];try{const response=await fetch(key.baseUrl+'/chat/completions',{method:'POST',headers:{authorization:'Bearer '+key.apiKey,'content-type':'application/json'},body:JSON.stringify({model:key.model,messages:input.messages,temperature:input.temperature,max_tokens:input.max_tokens}),signal:AbortSignal.timeout(20000)});if(!response.ok){errors.push('LLM key slot '+(i+1)+' HTTP '+response.status);continue;}const payload=await response.json();if(payload?.choices?.[0]?.message?.content)return payload;errors.push('LLM key slot '+(i+1)+' returned no content');}catch(error){errors.push('LLM key slot '+(i+1)+' failed: '+String(error));}}if(env.AI){try{return await env.AI.run(model,input);}catch(error){errors.push('Workers AI fallback failed: '+String(error));}}throw new Error(errors.join('; ')||'No LLM provider configured');}};}
 const operatorAuthorized=(request:Request,env:Env)=>!!env.OPERATOR_API_TOKEN&&request.headers.get('authorization')==='Bearer '+env.OPERATOR_API_TOKEN;
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
@@ -35,6 +40,33 @@ async function audit(env:Env,type:string,actor:string,payload:unknown){await env
 function ema(values:number[],period:number){if(values.length<period)return null;const k=2/(period+1);let v=values.slice(0,period).reduce((a,b)=>a+b,0)/period;for(const x of values.slice(period))v=x*k+v*(1-k);return v;}
 function rsi(values:number[],period=14){if(values.length<=period)return null;let gains=0,losses=0;for(let i=values.length-period;i<values.length;i++){const delta=values[i]-values[i-1];if(delta>0)gains+=delta;else losses-=delta;}if(losses===0)return 100;const rs=(gains/period)/(losses/period);return 100-100/(1+rs);}
 async function getCapital(env:Env):Promise<CapitalState>{const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return {equity:row?.equity??0,peakEquity:row?.peak_equity??0,dailyLossPct:row?.daily_loss_pct??0,weeklyLossPct:row?.weekly_loss_pct??0,monthlyLossPct:row?.monthly_loss_pct??0,openPositions:row?.open_positions??0,correlatedExposurePct:row?.correlated_exposure_pct??0,leverage:row?.leverage??0,marginUtilisationPct:row?.margin_utilisation_pct??0,exchangeHealthy:true,dataFresh:true,accountReconciled:row?.reconciled===1};}
+async function loadDerivatives(symbol:string):Promise<DerivativesSnapshot|null>{
+ const base='https://fapi.binance.com';
+ try{
+  const [premiumResponse,interestResponse]=await Promise.all([
+   fetch(base+'/fapi/v1/premiumIndex?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'},signal:AbortSignal.timeout(5000)}),
+   fetch(base+'/fapi/v1/openInterest?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'},signal:AbortSignal.timeout(5000)})
+  ]);
+  if(!premiumResponse.ok||!interestResponse.ok)return null;
+  const [premium,interest]=await Promise.all([premiumResponse.json() as Promise<any>,interestResponse.json() as Promise<any>]);
+  const snapshot:DerivativesSnapshot={observedAt:Number(premium.time),fundingRate:Number(premium.lastFundingRate),nextFundingTime:Number(premium.nextFundingTime),markPrice:Number(premium.markPrice),indexPrice:Number(premium.indexPrice),openInterest:Number(interest.openInterest),openInterestTime:Number(interest.time)};
+  return Object.values(snapshot).every(v=>Number.isFinite(v))?snapshot:null;
+ }catch{return null;}
+}
+async function loadPredictiveDerivatives(symbol:string):Promise<{points:DerivativePoint[];source:string|null}>{
+ try{
+  const base='https://fapi.binance.com';
+  const [fundingResponse,oiResponse]=await Promise.all([
+   fetch(base+'/fapi/v1/fundingRate?symbol='+encodeURIComponent(symbol)+'&limit=100',{signal:AbortSignal.timeout(5000)}),
+   fetch(base+'/futures/data/openInterestHist?symbol='+encodeURIComponent(symbol)+'&period=5m&limit=30',{signal:AbortSignal.timeout(5000)})
+  ]);
+  if(!fundingResponse.ok||!oiResponse.ok)return {points:[],source:null};
+  const [funding,oi]=await Promise.all([fundingResponse.json() as Promise<any[]>,oiResponse.json() as Promise<any[]>]);
+  const points:DerivativePoint[]=[];
+  for(const row of oi){const at=Number(row.timestamp),oiValue=Number(row.sumOpenInterest);const fr=funding.filter((x:any)=>Number(x.fundingTime)<=at).at(-1);if(Number.isFinite(at)&&Number.isFinite(oiValue)&&oiValue>=0&&fr){points.push({observedAt:at,fundingRate:Number(fr.fundingRate),openInterest:oiValue});}}
+  return {points,source:'Binance USD-M Futures public fundingRate + openInterestHist'};
+ }catch{return {points:[],source:null};}
+}
 async function marketBundle(env:Env,symbol:string){
  const root=binance(env);
  const [raw,depth,trades]=await Promise.all([
@@ -206,16 +238,70 @@ async function runMarketScan(env:Env,symbol:string){
 async function route(request:Request,env:Env):Promise<Response>{
  const url=new URL(request.url),path=url.pathname;
  if(request.method==='OPTIONS')return new Response(null,{status:204});
- if((path.startsWith('/api/amd/')||path==='/api/intelligence/advanced')&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+ if((path.startsWith('/api/amd/')||path.startsWith('/api/intelligence/'))&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
  if(path==='/api/institutional/strategy/run'&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
  if(path==='/api/intelligence/advanced'&&request.method==='POST'){
   const body=await request.json() as {symbol?:string};
   const symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol))return json({error:'Supported symbols: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT'},400);
   const bundle=await marketBundle(env,symbol);
+  const derivatives=assessDerivatives(await loadDerivatives(symbol),bundle.lastPrice,bundle.observedAt);
   const assessment=assessAdvancedMarket({symbol,observedAt:bundle.observedAt,closes:bundle.closes,volumes:bundle.snapshot.volumes??[],book:bundle.book,trades:bundle.book.trades??[]});
-  await audit(env,'intelligence.advanced.assessed','advanced-intelligence-engine',{symbol,observedAt:assessment.observedAt,regime:assessment.regime.label,consensus:assessment.debate.consensus,vetoes:assessment.adversarial.vetoes.length});
-  return json({assessment,mode:'research-only',liveTradingEnabled:false});
+  await audit(env,'intelligence.advanced.assessed','advanced-intelligence-engine',{symbol,observedAt:assessment.observedAt,regime:assessment.regime.label,consensus:assessment.debate.consensus,vetoes:assessment.adversarial.vetoes.length,derivativesStatus:derivatives.status});
+  return json({assessment,derivatives,mode:'research-only',liveTradingEnabled:false});
+ }
+ if(path==='/api/intelligence/predictive'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
+  if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol))return json({error:'Supported symbols: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT'},400);
+  const bundle=await marketBundle(env,symbol),now=bundle.observedAt;
+  const bitgetResponse=await fetch('https://api.bitget.com/api/v2/spot/market/orderbook?symbol='+encodeURIComponent(symbol)+'&type=step0&limit=20',{signal:AbortSignal.timeout(5000)}).catch(()=>null);
+  let bitget:any=null;if(bitgetResponse?.ok){const data=await bitgetResponse.json().catch(()=>null) as any;bitget=data?.data??null;}
+  const quotes:ExchangeQuote[]=[{exchange:'Binance Spot',symbol,observedAt:now,bid:bundle.book.bids[0].price,ask:bundle.book.asks[0].price,bidDepth:bundle.book.bids.reduce((a,l)=>a+l.quantity,0),askDepth:bundle.book.asks.reduce((a,l)=>a+l.quantity,0),bids:bundle.book.bids,asks:bundle.book.asks,source:'Binance public REST order book'}];
+  if(bitget){const bids=(bitget.bids||[]).map((l:any)=>({price:Number(l[0]),quantity:Number(l[1])})),asks=(bitget.asks||[]).map((l:any)=>({price:Number(l[0]),quantity:Number(l[1])})),bid=Number(bids[0]?.price),ask=Number(asks[0]?.price),observedAt=Number(bitget.ts);if(Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>bid&&Number.isFinite(observedAt)&&bids.length&&asks.length)quotes.push({exchange:'Bitget Spot',symbol,observedAt,bid,ask,bidDepth:bids.reduce((a:number,l:any)=>a+l.quantity,0),askDepth:asks.reduce((a:number,l:any)=>a+l.quantity,0),bids,asks,source:'Bitget public Spot order book'});}
+  const sync=synchroniseExchanges(quotes,now),liquidity=buildLiquidityMap(sync.quotes,bundle.lastPrice),derivativeHistory=await loadPredictiveDerivatives(symbol);
+  const validDerivatives=derivativeHistory.points.filter(p=>Number.isFinite(p.openInterest)&&Number.isFinite(p.fundingRate));
+  const firstOi=validDerivatives[0]?.openInterest,lastOi=validDerivatives.at(-1)?.openInterest;
+  const oiChange=firstOi&&lastOi!==undefined?(lastOi/firstOi-1)*100:null;
+  for(const p of validDerivatives){await env.DB.prepare('INSERT OR IGNORE INTO derivatives_history(symbol,observed_at,funding_rate,open_interest,source) VALUES(?,?,?,?,?)').bind(symbol,p.observedAt,p.fundingRate,p.openInterest,derivativeHistory.source).run();}
+  const liquidationRows=await env.DB.prepare('SELECT observed_at,side,price,quantity,source FROM liquidation_events WHERE symbol=? AND observed_at>? ORDER BY observed_at DESC LIMIT 5000').bind(symbol,now-86_400_000).all<any>();const liquidations=analyseLiquidations(liquidationRows.results.map(r=>({observedAt:Number(r.observed_at),side:r.side as 'long'|'short',price:Number(r.price),quantity:Number(r.quantity),source:String(r.source)})),now),strategyCloses=bundle.closes.slice(0,-1),returns=strategyCloses.slice(1).map((p:number,i:number)=>(p/strategyCloses[i]-1));
+  const debate=buildSpecialistDebate({trendPct:(bundle.lastPrice/bundle.closes[0]-1)*100,depthImbalance:quotes.length?((quotes[0].bidDepth-quotes[0].askDepth)/(quotes[0].bidDepth+quotes[0].askDepth||1)):0,tradeDelta:bundle.book.trades?.length?((bundle.book.trades.filter((t:any)=>t.aggressor==='buy').reduce((a:number,t:any)=>a+t.price*t.quantity,0)-bundle.book.trades.filter((t:any)=>t.aggressor==='sell').reduce((a:number,t:any)=>a+t.price*t.quantity,0))/(bundle.book.trades.reduce((a:number,t:any)=>a+t.price*t.quantity,0)||1)):0,fundingRate:validDerivatives.at(-1)?.fundingRate??null,openInterestChangePct:oiChange,liquidations,exchangeHealthy:sync.healthy,spreadBps:bundle.snapshot.spreadBps??0});
+  let portfolioRisk:any=null;try{const riskSymbols=['BTCUSDT','ETHUSDT','SOLUSDT'];const histories=await Promise.all(riskSymbols.map(async asset=>{try{const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+asset+'&interval=1m&limit=120');const closes=rows.map(k=>Number(k[4])).filter((v:number)=>Number.isFinite(v)&&v>0);return [asset,closes.slice(1).map((v:number,i:number)=>v/closes[i]-1)] as const;}catch{return [asset,[]] as const;}}));const aligned=Object.fromEntries(histories.filter(([,series])=>series.length>=20));portfolioRisk=calculatePortfolioRisk(Object.keys(aligned).length?aligned:{[symbol]:returns},.95);}catch(error){portfolioRisk={available:false,reason:String(error)};}
+  const genome={id:'baseline-'+symbol,fast:9,slow:21,entryThreshold:.2,stopAtr:1.5,targetR:2,maxSpreadBps:20};
+  const stress=adversarialStrategyTest(genome,[{name:'baseline',spreadMultiplier:1,slippageBps:5,missRate:0,latencyMs:100},{name:'spread-expansion',spreadMultiplier:1.5,slippageBps:15,missRate:.05,latencyMs:500},{name:'liquidity-shock',spreadMultiplier:2,slippageBps:30,missRate:.2,latencyMs:1500}]);
+  const seed=[genome,{...genome,id:'conservative',fast:8,slow:26,stopAtr:2,targetR:1.8,maxSpreadBps:12},{...genome,id:'momentum',fast:5,slow:34,entryThreshold:.35,targetR:2.5}];
+  const evolution=evolveStrategies(seed,(g)=>scoreStrategyGenome(g,strategyCloses),3,12);
+  const execution=simulateSmartExecution({side:'buy',quantity:Math.max(0.000001,Math.min(0.001,5/bundle.lastPrice)),levels:bundle.book.asks,referencePrice:bundle.lastPrice,feeBps:10,maxSlippageBps:20,latencyMs:150,queuePenaltyBps:1});
+  const runId=uuid(),eventPayload={symbol,observedAt:now,exchangeSync:sync,liquidations,debate,portfolioRisk,stress,evolutionBest:evolution.best?.genome??null,execution};
+  const event=makeDecisionEvent(1,now,'predictive-liquidity.assessment',eventPayload);
+  await env.DB.prepare('INSERT INTO predictive_liquidity_runs(run_id,symbol,observed_at,status,payload_json) VALUES(?,?,?,?,?)').bind(runId,symbol,now,'research-only',JSON.stringify(eventPayload)).run();
+  await env.DB.prepare('INSERT INTO decision_replay_events(run_id,sequence,observed_at,event_kind,payload_json,previous_hash,event_hash) VALUES(?,?,?,?,?,?,?)').bind(runId,event.sequence,event.at,event.kind,JSON.stringify(event.payload),event.previousHash,event.hash).run();
+  await audit(env,'predictive-liquidity.completed','predictive-liquidity-engine',{runId,symbol,exchanges:sync.exchanges,exchangeHealthy:sync.healthy,liquidationStatus:liquidations.status,consensus:debate.consensus});
+  const paperAccount=await getPaperAccount(env);return json({runId,symbol,observedAt:now,exchangeSync:sync,liquidityMap:liquidity,derivatives:{status:validDerivatives.length?'available':'unavailable',source:derivativeHistory.source,history:validDerivatives,openInterestChangePct:oiChange,limitations:['Historical funding and open-interest observations are available only where the public provider returns them.','Historical liquidation feed is not configured by default; externally ingested events are operator-supplied and not independently certified.']},liquidations,debate,adversarial:stress,strategyEvolution:evolution,portfolioRisk,smartExecution:execution,decisionReplay:{eventCount:1,finalHash:event.hash,valid:verifyDecisionReplay([event]).valid},paperAccount:{configured:!!paperAccount,initialEquity:Number(paperAccount?.initial_equity??0),equity:Number(paperAccount?.equity??0),currency:'USD',mode:'paper',automaticPaperTradingEnabled:env.AUTO_PAPER_ENABLED==='true'},liveTradingEnabled:false});
+ }
+ if(path==='/api/intelligence/liquidations/ingest'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>null) as any;if(!body||!Array.isArray(body.events)||body.events.length<1||body.events.length>500)return json({error:'Provide 1 to 500 liquidation events'},400);
+  const symbol=String(body.symbol||'').toUpperCase(),exchange=String(body.exchange||'').slice(0,40),source=String(body.source||'').slice(0,80);
+  if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol)||!exchange||!source)return json({error:'Valid symbol, exchange and source are required'},400);
+  const valid=body.events.filter((e:any)=>e&&Number.isFinite(Number(e.observedAt))&&Number(e.observedAt)>0&&Number(e.observedAt)<=Date.now()+2000&&['long','short'].includes(e.side)&&Number.isFinite(Number(e.price))&&Number(e.price)>0&&Number.isFinite(Number(e.quantity))&&Number(e.quantity)>0);
+  if(valid.length!==body.events.length)return json({error:'One or more liquidation events are malformed or future-dated'},422);
+  await env.DB.batch(valid.map((e:any)=>env.DB.prepare('INSERT OR IGNORE INTO liquidation_events(event_id,symbol,exchange_name,observed_at,side,price,quantity,source,ingested_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(String(e.id||uuid()).slice(0,100),symbol,exchange,Number(e.observedAt),e.side,Number(e.price),Number(e.quantity),'operator-ingested:'+source,Date.now())));
+  await audit(env,'liquidations.ingested','operator-liquidation-feed',{symbol,exchange,source,submitted:valid.length});
+  return json({accepted:valid.length,symbol,source:'operator-ingested:'+source,verifiedByPlatform:false,liveTradingEnabled:false});
+ }
+ if(path==='/api/intelligence/replay'&&request.method==='GET'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const runId=url.searchParams.get('runId')||'';if(!/^[a-f0-9-]{20,50}$/i.test(runId))return json({error:'Valid runId is required'},400);
+  const rows=await env.DB.prepare('SELECT sequence,observed_at,event_kind,payload_json,previous_hash,event_hash FROM decision_replay_events WHERE run_id=? ORDER BY sequence').bind(runId).all<any>();
+  const events=rows.results.map(r=>({sequence:Number(r.sequence),at:Number(r.observed_at),kind:String(r.event_kind),payload:JSON.parse(String(r.payload_json)),previousHash:String(r.previous_hash),hash:String(r.event_hash)}));
+  return json({runId,...verifyDecisionReplay(events),events,liveTradingEnabled:false});
+ }
+ if(path==='/api/intelligence/recovery'&&request.method==='GET'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const rows=await env.DB.prepare('SELECT * FROM agent_recovery_leases ORDER BY updated_at DESC LIMIT 100').all<any>();
+  const decisions=rows.results.map(r=>({agentId:r.agent_id,idempotencyKey:r.idempotency_key,...recoverAgentState({status:r.status,attempts:Number(r.attempts),leaseUntil:Number(r.lease_until),maxAttempts:Number(r.max_attempts)},Date.now()),lastError:r.last_error}));
+  return json({leases:decisions,liveTradingEnabled:false});
  }
  if(path==='/api/operator/status'&&request.method==='GET'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
@@ -276,15 +362,15 @@ async function route(request:Request,env:Env):Promise<Response>{
  }
 
 
- if(path==='/api/ai/status'&&request.method==='GET')return json({provider:'Cloudflare Workers AI',bindingAvailable:!!env.AI,enabled:env.AI_ENABLED==='true',model:env.AI_MODEL||'@cf/google/gemma-4-26b-a4b-it',automaticAnalysis:false,liveTradingEnabled:false,reason:env.AI_ENABLED==='true'?'AI inference is enabled for explicit department analysis requests':'AI inference is disabled by default; enable AI_ENABLED only after reviewing account usage and model costs'});
+ if(path==='/api/ai/status'&&request.method==='GET'){const keys=configuredLlmKeys(env.LLM_API_KEYS);return json({provider:keys.length?'OpenAI-compatible multi-key failover + Workers AI fallback':'Cloudflare Workers AI',bindingAvailable:!!env.AI||keys.length>0,enabled:env.AI_ENABLED==='true',configuredKeySlots:keys.length,workersAiFallbackAvailable:!!env.AI,model:env.AI_MODEL||'@cf/google/gemma-4-26b-a4b-it',automaticAnalysis:false,liveTradingEnabled:false,reason:env.AI_ENABLED==='true'?'LLM enabled for authenticated specialist analysis; external key slots fail over sequentially, then Workers AI':'LLM inference is disabled'});}
  if(path==='/api/agents/analyse'&&request.method==='POST'){
   if(!env.OPERATOR_API_TOKEN||request.headers.get('authorization')!=='Bearer '+env.OPERATOR_API_TOKEN)return json({error:'Operator authentication required'},401);
-  if(env.AI_ENABLED!=='true'||!env.AI)return json({error:'AI specialist analysis is not enabled',bindingAvailable:!!env.AI,enablement:'Configure the Workers AI binding and set AI_ENABLED=true after reviewing usage costs',liveTradingEnabled:false},503);
+  const llm=llmBinding(env);if(env.AI_ENABLED!=='true'||!llm)return json({error:'AI specialist analysis is not enabled or no provider is configured',bindingAvailable:!!llm,enablement:'Set AI_ENABLED=true and configure LLM_API_KEYS or the Workers AI binding',liveTradingEnabled:false},503);
   const body=await request.json().catch(()=>({})) as any,departmentId=String(body.departmentId||'market'),symbol=String(body.symbol||'BTCUSDT').toUpperCase(),department=departments.find(x=>x.id===departmentId);
   if(!department)return json({error:'Unknown departmentId'},404);
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid market symbol'},400);
   const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),depth=analyseOrderBook(bundle.book),model=env.AI_MODEL||'@cf/google/gemma-4-26b-a4b-it';
-  const result=await runDepartmentCouncil(env.AI,model,department,{symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,marketReport:report,orderBook:depth});
+  const result=await runDepartmentCouncil(llm,model,department,{symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,marketReport:report,orderBook:depth});
   const now=Date.now(),taskRows=result.findings.map(f=>env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?)").bind(uuid(),department.id+':'+f.roleName,'ai-department-analysis','completed',now,now,JSON.stringify({departmentId,symbol,model,promptVersion:result.promptVersion}),JSON.stringify(f)));
   for(const roleName of result.missingRoles)taskRows.push(env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?)").bind(uuid(),department.id+':'+roleName,'ai-department-analysis','incomplete',now,now,JSON.stringify({departmentId,symbol,model,promptVersion:result.promptVersion}),JSON.stringify({reason:'No validated finding returned by the model'})));
   const findingsByRole=new Map(result.findings.map(f=>[f.roleName,f]));
@@ -412,19 +498,22 @@ async function route(request:Request,env:Env):Promise<Response>{
  return json({error:'Not found',path},404);
 }
 export default {
- async fetch(request:Request,env:Env):Promise<Response>{try{return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},
- async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),fiveMinuteTick=new Date(createdAt).getUTCMinutes()%5===0,tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(fiveMinuteTick){tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'amd-forward-scan' as const,symbol,createdAt})));if(env.AUTO_PAPER_ENABLED==='true')tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));}await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
+ async fetch(request:Request,env:Env):Promise<Response>{try{const id=env.ORCHESTRATOR.idFromName('global');await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/ensure-schedule');return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
  async fetch(request:Request):Promise<Response>{
   const url=new URL(request.url);
-  if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[],lastProcessedAt=await this.state.storage.get<number>('lastProcessedAt')??null,lastError=await this.state.storage.get<string>('lastError')??null,processedCount=await this.state.storage.get<number>('processedCount')??0;return json({id:this.state.id.toString(),queued:queue.length,lastProcessedAt,lastError,processedCount,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
+  if(url.pathname==='/ensure-schedule'){const started=await this.state.storage.get<boolean>('schedulerStarted')??false;if(!started){await this.state.storage.put('schedulerStarted',true);await this.state.storage.setAlarm(Date.now()+1000);}return json({scheduler:'durable-object-alarm',started:true,cronRequired:false});}
+  if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[],lastProcessedAt=await this.state.storage.get<number>('lastProcessedAt')??null,lastError=await this.state.storage.get<string>('lastError')??null,processedCount=await this.state.storage.get<number>('processedCount')??0,schedulerStarted=await this.state.storage.get<boolean>('schedulerStarted')??false,lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute')??null;return json({id:this.state.id.toString(),queued:queue.length,lastProcessedAt,lastError,processedCount,scheduler:'durable-object-alarm',schedulerStarted,lastScheduledMinute,cronRequired:false,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
   if(url.pathname==='/enqueue'&&request.method==='POST'){const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[],keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||''))),candidates=tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))),capacity=Math.max(0,500-queue.length),accepted=candidates.slice(0,capacity),rejectedCapacity=candidates.length-accepted.length;await this.state.storage.put('queue',[...queue,...accepted]);if(accepted.length)await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:accepted.length,skippedDuplicates:tasks.length-candidates.length,rejectedCapacity,queued:queue.length+accepted.length});}
   return json({error:'Not found'},404);
  }
  async alarm():Promise<void>{
-  const queue=await this.state.storage.get<Task[]>('queue')??[],batch=queue.splice(0,3);let processed=0,nextDelay=1000;
+  const now=Date.now(),minuteKey=new Date(now).toISOString().slice(0,16),lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute');
+  let queue=await this.state.storage.get<Task[]>('queue')??[];
+  if(minuteKey!==lastScheduledMinute){const symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=now,fiveMinuteTick=new Date(now).getUTCMinutes()%5===0,tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(fiveMinuteTick){tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'amd-forward-scan' as const,symbol,createdAt})));if(this.env.AUTO_PAPER_ENABLED==='true')tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));}const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
+  const batch=queue.splice(0,3);let processed=0,nextDelay=1000;
   for(const task of batch){try{
     await this.env.DB.batch([
      this.env.DB.prepare("INSERT OR REPLACE INTO agent_task_leases(task_id,owner,lease_until,heartbeat_at,attempts) VALUES(?,?,?,?,?)").bind(task.id,this.state.id.toString(),Date.now()+30_000,Date.now(),task.attempts??0),
@@ -476,6 +565,7 @@ export class AgentOrchestrator {
      }
     }else throw new Error('Unsupported or malformed runtime task');
     await this.env.DB.prepare('DELETE FROM agent_task_leases WHERE task_id=?').bind(task.id).run();
+    await this.env.DB.prepare("INSERT INTO agent_recovery_leases(agent_id,status,attempts,lease_until,max_attempts,idempotency_key,last_error,updated_at) VALUES(?,'completed',?,?,3,?,NULL,?) ON CONFLICT(agent_id) DO UPDATE SET status='completed',lease_until=excluded.lease_until,updated_at=excluded.updated_at,last_error=NULL").bind(task.id,task.attempts??0,Date.now(),task.id,Date.now()).run();
     processed++;
   }catch(error){
     await this.env.DB.prepare('DELETE FROM agent_task_leases WHERE task_id=?').bind(task.id).run();
@@ -483,7 +573,8 @@ export class AgentOrchestrator {
     await this.state.storage.put('lastError',message);
     if(attempts<3){queue.push({...task,attempts});nextDelay=Math.max(nextDelay,1000*2**attempts);await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,task.roleId??'market:Market Data Intelligence',task.kind, 'retrying',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();}
     else await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,task.roleId??'market:Market Data Intelligence',task.kind,'failed',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();
+    await this.env.DB.prepare("INSERT INTO agent_recovery_leases(agent_id,status,attempts,lease_until,max_attempts,idempotency_key,last_error,updated_at) VALUES(?,?,?,?,3,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET status=excluded.status,attempts=excluded.attempts,lease_until=excluded.lease_until,last_error=excluded.last_error,updated_at=excluded.updated_at").bind(task.id,attempts<3?'retrying':'quarantined',attempts,attempts<3?Date.now()+1000*2**attempts:Date.now(),task.id,message,Date.now()).run();
   }}
-  await this.state.storage.put('queue',queue);await this.state.storage.put('lastProcessedAt',Date.now());await this.state.storage.put('processedCount',(await this.state.storage.get<number>('processedCount')??0)+processed);if(queue.length)await this.state.storage.setAlarm(Date.now()+nextDelay);
+  await this.state.storage.put('queue',queue);await this.state.storage.put('lastProcessedAt',Date.now());await this.state.storage.put('processedCount',(await this.state.storage.get<number>('processedCount')??0)+processed);const nextAlarm=queue.length?Date.now()+nextDelay:(Math.floor(Date.now()/60000)+1)*60000+250;await this.state.storage.setAlarm(nextAlarm);
  }
 }
