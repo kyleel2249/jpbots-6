@@ -6,6 +6,7 @@ import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthori
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
  it('calculates imbalance, microprice and depth bands',()=>{const r=analyseOrderBook(book);expect(r.obi).toBeCloseTo(.2);expect(r.microprice).not.toBeNull();expect(r.bands).toHaveLength(5);expect(r.tbi).toBe(1);});
+ it('rejects invalid mid prices and flags crossed order books',()=>{expect(()=>analyseOrderBook({...book,mid:0})).toThrow();const r=analyseOrderBook({...book,bids:[{price:100.02,quantity:5}],asks:[{price:100,quantity:4}]});expect(r.liquidityState).toBe('invalid');expect(r.spreadBps).toBeNull();expect(r.warnings).toContain('Crossed or locked book');});
  it('computes event-based order-flow imbalance',()=>expect(calculateOrderFlowImbalance([{side:'bid',kind:'add',quantity:10,timestamp:1},{side:'ask',kind:'execute',quantity:5,timestamp:2}]).ofi).toBe(1));
  it('simulates depth consumption and partial fills',()=>{const r=simulateBookSweep(book.asks,'buy',3,10);expect(r.valid).toBe(true);expect(r.filled).toBe(3);expect(r.fees).toBeGreaterThan(0);});
 });
