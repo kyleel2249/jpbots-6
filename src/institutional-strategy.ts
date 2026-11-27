@@ -47,11 +47,17 @@ export function replayInstitutionalStrategy(base:StrategyCandle[],higher:Pick<Ti
  const errors:string[]=[];if(!validateCandles(base))errors.push('At least 50 valid base candles are required');for(const k of ['15m','1h','4h'] as const)if(!validateCandles(higher[k]))errors.push('Invalid or insufficient '+k+' history');if(!finite(initialEquity)||initialEquity<=0)errors.push('Initial equity must be positive');if(errors.length)return {valid:false,errors,trades:[] as SimTrade[],metrics:null};
  const costs=(2*config.feeBps+2*config.slippageBps+config.spreadBps+config.impactBps)/10_000;let equity=initialEquity,peak=equity,position:{side:'long'|'short';entry:number;stop:number;target:number;entryTime:number;qty:number}|null=null;const trades:SimTrade[]=[],curve=[equity];
  for(let i=50;i<base.length-1;i++){
-  const c=base[i],next=base[i+1];if(position){const hitStop=position.side==='long'?c.low<=position.stop:c.high>=position.stop,hitTarget=position.side==='long'?c.high>=position.target:c.low<=position.target;if(hitStop||hitTarget){const exit=hitStop?position.stop:position.target,move=(position.side==='long'?exit-position.entry:position.entry-exit)*position.qty,fee=(position.entry+exit)*position.qty*costs/2,net=move-fee;equity+=net;trades.push({side:position.side,entry:position.entry,exit,entryTime:position.entryTime,exitTime:c.closeTime,netPnl:net,netPct:net/Math.max(equity-net,1)*100,exitReason:hitStop?'stop-loss':'take-profit',costBps:costs*10_000});position=null;curve.push(equity);continue;}}
-  if(position)continue;
+  const c=base[i],next=base[i+1];
+  if(position){
+   const adverse=position.side==='long'?c.low:c.high,unrealised=(position.side==='long'?adverse-position.entry:position.entry-adverse)*position.qty-(position.entry+adverse)*position.qty*costs/2,worstEquity=equity+unrealised;
+   peak=Math.max(peak,equity);maxDrawdown=Math.max(maxDrawdown,peak>0?(peak-worstEquity)/peak*100:100);curve.push(worstEquity);
+   const hitStop=position.side==='long'?c.low<=position.stop:c.high>=position.stop,hitTarget=position.side==='long'?c.high>=position.target:c.low<=position.target;
+   if(hitStop||hitTarget){const exit=hitStop?position.stop:position.target,move=(position.side==='long'?exit-position.entry:position.entry-exit)*position.qty,fee=(position.entry+exit)*position.qty*costs/2,net=move-fee;equity+=net;trades.push({side:position.side,entry:position.entry,exit,entryTime:position.entryTime,exitTime:c.closeTime,netPnl:net,netPct:net/Math.max(equity-net,1)*100,exitReason:hitStop?'stop-loss':'take-profit',costBps:costs*10_000});position=null;curve.push(equity);}
+   continue;
+  }
   const snap=(key:'15m'|'1h'|'4h')=>trendAt(higher[key],c.openTime);
   const dirs=[trendAt(base,c.openTime),snap('15m'),snap('1h'),snap('4h')],long=dirs.filter(x=>x==='bullish').length>=3&&dirs[2]==='bullish'&&dirs[3]==='bullish',short=dirs.filter(x=>x==='bearish').length>=3&&dirs[2]==='bearish'&&dirs[3]==='bearish';if(!long&&!short)continue;
-  const zones=fvgZones(base.slice(0,i+1)).filter(z=>z.index>=i-60&&z.side===(long?'long':'short')),zone=zones.at(-1);if(!zone)continue;
+  const zones=fvgZones(base.slice(0,i)).filter(z=>z.index>=i-60&&z.side===(long?'long':'short')&&c.low<=z.high&&c.high>=z.low&&(long?c.close>=z.mid:c.close<=z.mid)),zone=zones.at(-1);if(!zone)continue;
   const a=atr(base.slice(0,i+1),config.atrPeriod);if(!a)continue;const entry=next.open,stop=long?Math.min(...base.slice(Math.max(0,i-config.swingLookback),i).map(x=>x.low))-a*.2:Math.max(...base.slice(Math.max(0,i-config.swingLookback),i).map(x=>x.high))+a*.2,risk=Math.abs(entry-stop);if(!(risk>0)||Math.abs(entry-zone.mid)>a*config.maxEntryDistanceAtr)continue;
   const target=entry+(long?1:-1)*risk*Math.max(config.minRewardRisk,2),costPerUnit=entry*costs,netRR=(risk*2-costPerUnit)/(risk+costPerUnit);if(netRR<config.minRewardRisk)continue;
   const qty=Math.min(equity*config.riskPct/100/(risk+costPerUnit),equity/entry);if(!(qty>0))continue;position={side:long?'long':'short',entry,stop,target,entryTime:next.openTime,qty};
