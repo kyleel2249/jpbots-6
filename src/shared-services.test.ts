@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles,platformServices} from './departments';
-import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio,netReward,signalDecision} from './intelligence';
+import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio,netReward,signalDecision,validateOrder,deploymentStage} from './intelligence';
 import {defaultRisk} from './engine';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,agentTrustScore,defaultCapitalPolicy,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
@@ -39,6 +39,7 @@ describe('central decision and order authority',()=>{
  it('fails closed when central capital policy values are invalid',()=>{const r=capitalAuthority(healthy,{...defaultCapitalPolicy,maxRiskPerTradePct:Number.NaN});expect(r.allowNewEntries).toBe(false);expect(r.killSwitch).toBe(true);expect(r.reasons).toContain('invalid capital policy configuration');});
  it('fails closed when account equity or risk metrics are non-finite',()=>{const r=capitalAuthority({...healthy,equity:Number.NaN});expect(r.allowNewEntries).toBe(false);expect(r.killSwitch).toBe(true);expect(r.reasons).toContain('invalid or unavailable account risk metrics');});
  it('central risk veto overrides positive agent evidence',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:99,reason:'strong'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:{...healthy,dailyLossPct:2},proposedRiskPct:.2});expect(r.approved).toBe(false);expect(r.risk.allowNewEntries).toBe(false);});
+ it('routes venue validation through capital authorization and remains paper-only',()=>{const caps={spot:true,margin:true,usdtM:true,coinM:true,usdcM:true,postOnly:true,reduceOnly:true};const base={market:'spot' as const,quantity:1,minQuantity:.001,quantityStep:.001,type:'market' as const,signalApproved:true,capital:healthy,proposedRiskPct:.2};const paper=validateOrder({...base,mode:'paper'},caps);expect(paper.valid).toBe(true);expect(paper.liveExecutionEnabled).toBe(false);const live=validateOrder({...base,mode:'live'},caps);expect(live.valid).toBe(false);});
  it('rejects order requests when live mode is requested or account is unreconciled',()=>{const r=authorizeOrder({signalApproved:true,capital:{...healthy,accountReconciled:false},proposedRiskPct:.2,market:'spot',quantity:1,minQuantity:.001,quantityStep:.001,liveRequested:true});expect(r.approved).toBe(false);expect(r.liveExecutionEnabled).toBe(false);});
 });
 
@@ -71,4 +72,8 @@ describe('performance data integrity',()=>{
 describe('legacy signal helper cannot bypass central authority',()=>{
  const healthy={equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true};
  it('rejects legacy signals without entry stop target and cost economics',()=>{const agent={id:1,name:'trend',division:'Market Intelligence',strategy:'trend',symbol:'BTCUSDT',timeframe:'1m',status:'READY' as const,confidence:90,trades:100,winRate:60,pnl:100,risk:.2};const signal={id:1,time:'now',symbol:'BTCUSDT',side:'LONG' as const,strategy:'trend',confidence:90,agent:'trend',status:'WATCH' as const};const r=signalDecision(signal,agent,healthy,defaultRisk,.2);expect(r.approved).toBe(false);expect(r.reasons).toContain('net reward/risk economics unacceptable');});
+});
+
+describe('deployment qualification cannot enable live execution',()=>{
+ it('returns review-only status even after all qualification checks',()=>{const r=deploymentStage({tests:true,backtestTrades:200,backtestExpectancy:1,oosTrades:60,oosExpectancy:.5,walkForward:true,stress:true,paperTrades:200,paperExpectancy:.5,paperDrawdown:2,stable:true,explicitApproval:true});expect(r.stage).toBe('restricted-live-review');expect(r.liveExecutionEnabled).toBe(false);});
 });
