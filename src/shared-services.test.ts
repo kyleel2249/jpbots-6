@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles,platformServices} from './departments';
-import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio} from './intelligence';
+import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio,netReward} from './intelligence';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
@@ -50,4 +50,9 @@ describe('per-trade risk authority',()=>{
  const healthy={equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true};
  it('rejects a position whose proposed risk exceeds the central policy cap',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:99,reason:'strong'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:healthy,proposedRiskPct:.5});expect(r.approved).toBe(false);expect(r.risk.reasons).toContain('proposed per-trade risk exceeds capital policy');});
  it('fails closed when a proposed trade omits its risk budget',()=>{const r=authorizeOrder({signalApproved:true,capital:healthy,proposedRiskPct:0,market:'spot',quantity:1,minQuantity:.001,quantityStep:.001});expect(r.approved).toBe(false);expect(r.capitalVeto).toBe(true);});
+});
+
+describe('net trade economics',()=>{
+ it('deducts entry and exit fees and slippage from reward-to-risk',()=>{const r=netReward(100,110,95,1,10,5);expect(r?.net).toBeCloseTo(9.685);expect(r?.netRewardRisk).toBeGreaterThan(1);});
+ it('rejects non-finite inputs and zero stop distance',()=>{expect(netReward(100,110,100,1,10,5)).toBeNull();expect(netReward(Number.NaN,110,95,1,10,5)).toBeNull();});
 });
