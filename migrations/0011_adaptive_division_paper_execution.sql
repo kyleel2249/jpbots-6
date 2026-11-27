@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS division_paper_accounts (
   day_key TEXT,
   day_start_equity REAL,
   open_positions INTEGER NOT NULL DEFAULT 0 CHECK(open_positions >= 0),
+  reserved_notional REAL NOT NULL DEFAULT 0 CHECK(reserved_notional >= 0),
+  reserved_risk_cash REAL NOT NULL DEFAULT 0 CHECK(reserved_risk_cash >= 0),
   updated_at INTEGER NOT NULL,
   FOREIGN KEY(division_id) REFERENCES trading_divisions(division_id)
 );
