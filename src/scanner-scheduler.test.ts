@@ -8,14 +8,16 @@ describe('scanner scheduling capacity',()=>{
  });
  it('schedules institutional and AMD work in a bounded five-minute burst',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,5),false,idFactory());
-  expect(tasks).toHaveLength(9);
+  expect(tasks).toHaveLength(10);
   expect(tasks.filter(t=>t.kind==='institutional-scan')).toHaveLength(3);
   expect(tasks.filter(t=>t.kind==='amd-forward-scan')).toHaveLength(3);
+  expect(tasks.filter(t=>t.kind==='adaptive-division-scan')).toHaveLength(1);
  });
  it('adds strategy scans only when explicitly enabled',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,5),true,idFactory());
-  expect(tasks).toHaveLength(12);
+  expect(tasks).toHaveLength(13);
   expect(tasks.filter(t=>t.kind==='institutional-strategy-scan')).toHaveLength(3);
+  expect(tasks.filter(t=>t.kind==='adaptive-division-scan')).toHaveLength(1);
   expect(SCANNER_TASKS_PER_ALARM).toBe(16);
  });
  it('schedules one global multi-asset discovery task every fifteen minutes',()=>{const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,15),false,idFactory());expect(tasks.filter(t=>t.kind==='global-market-scan')).toHaveLength(1);});
