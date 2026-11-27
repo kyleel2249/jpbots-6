@@ -7,6 +7,7 @@ describe('Cloudflare Pages API proxy',()=>{
   const response=await onRequest(context('https://app.example/api/amd/replay?symbol=BTCUSDT',{API_WORKER:binding,OPERATOR_API_TOKEN:'server-secret'},{authorization:'Bearer attacker','content-type':'application/json'},'POST','{}'));
   expect(response.status).toBe(200);expect(captured?.headers.get('authorization')).toBe('Bearer server-secret');expect(captured?.url).toContain('/api/amd/replay?symbol=BTCUSDT');expect(captured?.headers.get('authorization')).not.toContain('attacker');
  });
+ it('protects predictive intelligence and liquidation ingestion routes',async()=>{let captured:Request|undefined;const binding={fetch:vi.fn(async(r:Request)=>{captured=r;return new Response('ok');})};for(const path of ['/api/intelligence/predictive','/api/intelligence/liquidations/ingest']){await onRequest(context('https://app.example'+path,{API_WORKER:binding,OPERATOR_API_TOKEN:'server-secret'},undefined,'POST','{}'));expect(captured?.headers.get('authorization')).toBe('Bearer server-secret');}});
  it('fails closed when the Pages secret is missing',async()=>{
   const binding={fetch:vi.fn()};const response=await onRequest(context('https://app.example/api/amd/replay',{API_WORKER:binding}));
   expect(response.status).toBe(503);expect((await response.json() as any).code).toBe('PAGES_OPERATOR_SECRET_MISSING');expect(binding.fetch).not.toHaveBeenCalled();
