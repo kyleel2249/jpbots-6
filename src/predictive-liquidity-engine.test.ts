@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {synchroniseExchanges,analyseLiquidations,buildSpecialistDebate,adversarialStrategyTest,evolveStrategies,calculatePortfolioRisk,simulateSmartExecution,makeDecisionEvent,verifyDecisionReplay,recoverAgentState,buildLiquidityMap} from './predictive-liquidity-engine';
+import {synchroniseExchanges,analyseLiquidations,buildSpecialistDebate,adversarialStrategyTest,evolveStrategies,calculatePortfolioRisk,simulateSmartExecution,makeDecisionEvent,verifyDecisionReplay,recoverAgentState,buildLiquidityMap,scoreStrategyGenome} from './predictive-liquidity-engine';
 const now=1_800_000_000_000;
 describe('predictive liquidity engine',()=>{
  it('requires two fresh exchanges and detects skew',()=>{const r=synchroniseExchanges([{exchange:'Binance',symbol:'BTCUSDT',observedAt:now,bid:99,ask:101,bidDepth:2,askDepth:1,source:'rest'},{exchange:'Bitget',symbol:'BTCUSDT',observedAt:now,bid:99.1,ask:101.1,bidDepth:3,askDepth:1,source:'rest'}],now);expect(r.healthy).toBe(true);expect(synchroniseExchanges([r.quotes[0]],now).healthy).toBe(false);});
@@ -11,5 +11,6 @@ describe('predictive liquidity engine',()=>{
  it('rejects incomplete smart fills and models costs',()=>{const x=simulateSmartExecution({side:'buy',quantity:3,levels:[{price:101,quantity:2}],referencePrice:100,feeBps:10,maxSlippageBps:20,latencyMs:100});expect(x.complete).toBe(false);expect(x.accepted).toBe(false);});
  it('detects deterministic replay tampering',()=>{const a=makeDecisionEvent(1,now,'signal',{b:2,a:1}),b=makeDecisionEvent(2,now+1,'risk',{ok:false},a.hash);expect(verifyDecisionReplay([a,b]).valid).toBe(true);expect(verifyDecisionReplay([{...a,payload:{a:2}}]).valid).toBe(false);});
  it('recovers expired leases without retrying terminal states',()=>{expect(recoverAgentState({status:'running',attempts:1,leaseUntil:now-1,maxAttempts:3},now).action).toBe('retry');expect(recoverAgentState({status:'completed',attempts:1,leaseUntil:0,maxAttempts:3},now).action).toBe('no-op');});
+ it('scores candidate strategies using historical closes and execution costs',()=>{const closes=Array.from({length:100},(_,i)=>100+Math.sin(i/4)*3+i*.05);const genome={id:'x',fast:5,slow:20,entryThreshold:.01,stopAtr:1,targetR:2,maxSpreadBps:10};expect(Number.isFinite(scoreStrategyGenome(genome,closes))).toBe(true);});
  it('builds liquidity map',()=>{expect(buildLiquidityMap([{exchange:'x',symbol:'BTCUSDT',observedAt:now,bid:100,ask:101,bidDepth:3,askDepth:1,source:'x'}],100).length).toBeGreaterThan(0);});
 });
