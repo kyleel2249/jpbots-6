@@ -43,8 +43,8 @@ function validateConfig(c:AmdValidationConfig):string[]{
  if(!Number.isInteger(c.maxHoldingCandles)||c.maxHoldingCandles<1||c.maxHoldingCandles>300)e.push('Maximum holding candles must be an integer between 1 and 300');
  return e;
 }
-const validationFormatterCache=new Map<string,Intl.DateTimeFormat>();
-function local(c:StrategyCandle,tz:string){let formatter=validationFormatterCache.get(tz);if(!formatter){formatter=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});validationFormatterCache.set(tz,formatter);}const p=formatter.formatToParts(new Date(c.closeTime));const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return {date:v.year+'-'+v.month+'-'+v.day,minute:Number(v.hour)*60+Number(v.minute)};}
+const validationFormatterCache=new Map<string,Intl.DateTimeFormat>(),validationLocalCache=new Map<string,Map<number,{date:string;minute:number}>>();
+function local(c:StrategyCandle,tz:string){let cache=validationLocalCache.get(tz);if(!cache){cache=new Map();validationLocalCache.set(tz,cache);}const cached=cache.get(c.closeTime);if(cached)return cached;let formatter=validationFormatterCache.get(tz);if(!formatter){formatter=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});validationFormatterCache.set(tz,formatter);}const p=formatter.formatToParts(new Date(c.closeTime));const v=Object.fromEntries(p.map(x=>[x.type,x.value]));const result={date:v.year+'-'+v.month+'-'+v.day,minute:Number(v.hour)*60+Number(v.minute)};if(cache.size>30000)cache.clear();cache.set(c.closeTime,result);return result;}
 function average(v:number[]){return v.length?v.reduce((a,b)=>a+b,0)/v.length:0;}
 function atr(c:StrategyCandle[],index:number){const start=Math.max(1,index-14),v:number[]=[];for(let i=start;i<=index;i++){const x=c[i],p=c[i-1];v.push(Math.max(x.high-x.low,Math.abs(x.high-p.close),Math.abs(x.low-p.close)));}return average(v);}
 function metrics(trades:AmdReplayTrade[],initialEquity:number):{metrics:AmdMetrics;equityCurve:{time:number;equity:number;drawdownPct:number}[]}{
