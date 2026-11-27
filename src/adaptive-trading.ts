@@ -33,7 +33,8 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
  const reasons:string[]=[],vetoes:string[]=[];
  const fresh=e.dataAgeMs<=(division==='scalping'?5000:60000);
  if(!fresh)vetoes.push('Market data is stale for this trading horizon');
- const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);\n if(direction==='neutral')vetoes.push('No directional edge');
+ const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);
+ if(direction==='neutral')vetoes.push('No directional edge');
  if(e.spreadBps>policy.maxSpreadBps)vetoes.push('Spread exceeds division limit');
  if(e.estimatedRoundTripCostBps>policy.maxRoundTripCostBps)vetoes.push('Estimated round-trip costs exceed division limit');
  if(e.liquidityUsd<policy.minLiquidityUsd)vetoes.push('Insufficient verified liquidity');
