@@ -30,3 +30,11 @@ AND NOT EXISTS (SELECT 1 FROM paper_positions WHERE paper_positions.status IN ('
 AND NOT EXISTS (SELECT 1 FROM paper_fills);
 INSERT OR IGNORE INTO paper_accounts(account_id,initial_equity,equity,peak_equity,updated_at)
 VALUES('default',5,5,5,unixepoch()*1000);
+
+CREATE TABLE IF NOT EXISTS liquidation_events (
+ event_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, exchange_name TEXT NOT NULL,
+ observed_at INTEGER NOT NULL, side TEXT NOT NULL CHECK(side IN ('long','short')),
+ price REAL NOT NULL, quantity REAL NOT NULL, source TEXT NOT NULL,
+ ingested_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_liquidation_events_symbol_time ON liquidation_events(symbol,observed_at DESC);
