@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles} from './departments';
-import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance} from './shared-services';
+import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
  it('calculates imbalance, microprice and depth bands',()=>{const r=analyseOrderBook(book);expect(r.obi).toBeCloseTo(.2);expect(r.microprice).not.toBeNull();expect(r.bands).toHaveLength(5);expect(r.tbi).toBe(1);});
@@ -25,4 +25,11 @@ describe('integrated department and bot registry',()=>{
  it('registers all specialist departments and generated agents',()=>{expect(departments).toHaveLength(17);expect(allAgentRoles.length).toBeGreaterThan(200);});
  it('registers scalping, day and advanced bot families',()=>{expect(botDepartmentCoverage.scalping).toBe(10);expect(botDepartmentCoverage.dayTrading).toBe(10);expect(botCatalog.length).toBe(39);});
  it('keeps every bot paper-only and fails closed on live requests',()=>{const bot=botCatalog[0];const r=validateBotStart(bot,{mode:'restricted-live',market:'spot',timeframe:'1m',configuredRiskPct:.1,testsPassed:true,capitalApproved:true,marketDataFresh:true,exchangeHealthy:true});expect(r.allowed).toBe(false);expect(r.liveEnabled).toBe(false);});
+});
+
+describe('central decision and order authority',()=>{
+ const healthy={equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true};
+ it('allows only paper-eligible trades after independent risk and evidence checks',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:90,reason:'aligned'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:healthy});expect(r.approved).toBe(true);expect(r.mode).toBe('paper');expect(r.liveExecutionEnabled).toBe(false);});
+ it('central risk veto overrides positive agent evidence',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:99,reason:'strong'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:{...healthy,dailyLossPct:2}});expect(r.approved).toBe(false);expect(r.risk.allowNewEntries).toBe(false);});
+ it('rejects order requests when live mode is requested or account is unreconciled',()=>{const r=authorizeOrder({signalApproved:true,capital:{...healthy,accountReconciled:false},market:'spot',quantity:1,minQuantity:.001,quantityStep:.001,liveRequested:true});expect(r.approved).toBe(false);expect(r.liveExecutionEnabled).toBe(false);});
 });
