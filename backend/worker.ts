@@ -12,6 +12,7 @@ import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwa
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 import { assessAdvancedMarket } from '../src/advanced-intelligence';
+import { assessDerivatives, type DerivativesSnapshot } from '../src/derivatives-intelligence';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -35,6 +36,19 @@ async function audit(env:Env,type:string,actor:string,payload:unknown){await env
 function ema(values:number[],period:number){if(values.length<period)return null;const k=2/(period+1);let v=values.slice(0,period).reduce((a,b)=>a+b,0)/period;for(const x of values.slice(period))v=x*k+v*(1-k);return v;}
 function rsi(values:number[],period=14){if(values.length<=period)return null;let gains=0,losses=0;for(let i=values.length-period;i<values.length;i++){const delta=values[i]-values[i-1];if(delta>0)gains+=delta;else losses-=delta;}if(losses===0)return 100;const rs=(gains/period)/(losses/period);return 100-100/(1+rs);}
 async function getCapital(env:Env):Promise<CapitalState>{const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return {equity:row?.equity??0,peakEquity:row?.peak_equity??0,dailyLossPct:row?.daily_loss_pct??0,weeklyLossPct:row?.weekly_loss_pct??0,monthlyLossPct:row?.monthly_loss_pct??0,openPositions:row?.open_positions??0,correlatedExposurePct:row?.correlated_exposure_pct??0,leverage:row?.leverage??0,marginUtilisationPct:row?.margin_utilisation_pct??0,exchangeHealthy:true,dataFresh:true,accountReconciled:row?.reconciled===1};}
+async function loadDerivatives(symbol:string):Promise<DerivativesSnapshot|null>{
+ const base='https://fapi.binance.com';
+ try{
+  const [premiumResponse,interestResponse]=await Promise.all([
+   fetch(base+'/fapi/v1/premiumIndex?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'},signal:AbortSignal.timeout(5000)}),
+   fetch(base+'/fapi/v1/openInterest?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'},signal:AbortSignal.timeout(5000)})
+  ]);
+  if(!premiumResponse.ok||!interestResponse.ok)return null;
+  const [premium,interest]=await Promise.all([premiumResponse.json() as Promise<any>,interestResponse.json() as Promise<any>]);
+  const snapshot:DerivativesSnapshot={observedAt:Number(premium.time),fundingRate:Number(premium.lastFundingRate),nextFundingTime:Number(premium.nextFundingTime),markPrice:Number(premium.markPrice),indexPrice:Number(premium.indexPrice),openInterest:Number(interest.openInterest),openInterestTime:Number(interest.time)};
+  return Object.values(snapshot).every(v=>Number.isFinite(v))?snapshot:null;
+ }catch{return null;}
+}
 async function marketBundle(env:Env,symbol:string){
  const root=binance(env);
  const [raw,depth,trades]=await Promise.all([
@@ -213,9 +227,10 @@ async function route(request:Request,env:Env):Promise<Response>{
   const symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol))return json({error:'Supported symbols: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT'},400);
   const bundle=await marketBundle(env,symbol);
+  const derivatives=assessDerivatives(await loadDerivatives(symbol),bundle.lastPrice,bundle.observedAt);
   const assessment=assessAdvancedMarket({symbol,observedAt:bundle.observedAt,closes:bundle.closes,volumes:bundle.snapshot.volumes??[],book:bundle.book,trades:bundle.book.trades??[]});
-  await audit(env,'intelligence.advanced.assessed','advanced-intelligence-engine',{symbol,observedAt:assessment.observedAt,regime:assessment.regime.label,consensus:assessment.debate.consensus,vetoes:assessment.adversarial.vetoes.length});
-  return json({assessment,mode:'research-only',liveTradingEnabled:false});
+  await audit(env,'intelligence.advanced.assessed','advanced-intelligence-engine',{symbol,observedAt:assessment.observedAt,regime:assessment.regime.label,consensus:assessment.debate.consensus,vetoes:assessment.adversarial.vetoes.length,derivativesStatus:derivatives.status});
+  return json({assessment,derivatives,mode:'research-only',liveTradingEnabled:false});
  }
  if(path==='/api/operator/status'&&request.method==='GET'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
