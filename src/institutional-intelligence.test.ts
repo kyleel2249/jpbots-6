@@ -1,0 +1,11 @@
+import {describe,it,expect} from 'vitest';
+import {analyseInstitutionalMarket,type InstitutionalInput} from './institutional-intelligence';
+const candles=Array.from({length:40},(_,i)=>({openTime:i*60000,closeTime:(i+1)*60000,open:100+i*.1,high:101+i*.1,low:99+i*.1,close:100.5+i*.1,volume:100+i}));
+const base:InstitutionalInput={symbol:'BTCUSDT',observedAt:2400000,price:104, candles,book:{symbol:'BTCUSDT',timestamp:2400000,mid:104,bids:Array.from({length:20},(_,i)=>({price:103.99-i*.01,quantity:10})),asks:Array.from({length:20},(_,i)=>({price:104.01+i*.01,quantity:5})),trades:[]},trades:Array.from({length:20},(_,i)=>({price:104,quantity:i%2?2:1,aggressor:i%2?'buy':'sell',timestamp:2399000+i}))};
+describe('institutional intelligence engine',()=>{
+ it('produces ten specialist findings, FVGs, liquidity, profile and explicit non-authorisation',()=>{const r=analyseInstitutionalMarket(base);expect(r.findings).toHaveLength(10);expect(r.fvg).toBeInstanceOf(Array);expect(r.liquidityPools).toBeInstanceOf(Array);expect(r.volumeProfile).not.toBeNull();expect(r.overall.tradeable).toBe(false);});
+ it('does not claim whale identity or confirmed institutional ownership',()=>{const r=analyseInstitutionalMarket(base);expect(r.limitations.join(' ')).toContain('do not identify the beneficial owner');});
+ it('rejects malformed candles and missing two-sided depth',()=>{expect(()=>analyseInstitutionalMarket({...base,candles:[]})).toThrow();expect(()=>analyseInstitutionalMarket({...base,book:{...base.book,asks:[]}})).toThrow();});
+ it('does not label one-sided book or trade evidence as a directional trade signal',()=>{const r=analyseInstitutionalMarket({...base,trades:[]});expect(r.overall.tradeable).toBe(false);expect(r.overall.stance).not.toBe('bullish');});
+ it('rejects malformed trade prints and crossed displayed depth',()=>{expect(()=>analyseInstitutionalMarket({...base,trades:[{price:0,quantity:1,aggressor:'buy',timestamp:1}]})).toThrow('Invalid trade tape record');expect(()=>analyseInstitutionalMarket({...base,book:{...base.book,asks:[{price:103,quantity:1}]}})).toThrow('Crossed or locked order book');});
+});
