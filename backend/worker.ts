@@ -14,6 +14,7 @@ import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwa
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 import { assessAdvancedMarket } from '../src/advanced-intelligence';
+import { evaluateAdaptiveTrading, type MarketEvidence } from '../src/adaptive-trading';
 import { assessDerivatives, type DerivativesSnapshot } from '../src/derivatives-intelligence';
 import { synchroniseExchanges, buildLiquidityMap, analyseLiquidations, buildSpecialistDebate, adversarialStrategyTest, evolveStrategies, calculatePortfolioRisk, simulateSmartExecution, makeDecisionEvent, verifyDecisionReplay, recoverAgentState, scoreStrategyGenome, type ExchangeQuote, type DerivativePoint } from '../src/predictive-liquidity-engine';
 
@@ -534,6 +535,22 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json(response);
  }
  if(path==='/api/backtests'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT run_id,symbol,interval_name,strategy_id,strategy_version,completed_at,metrics_json FROM backtest_runs ORDER BY completed_at DESC LIMIT 50').all();return json({runs:rows.results});}
+ if(path==='/api/adaptive-trading/status'&&request.method==='GET'){
+  const divisions=await env.DB.prepare('SELECT * FROM trading_divisions ORDER BY division_id').all<any>();
+  const decisions=await env.DB.prepare('SELECT decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json FROM adaptive_trading_decisions ORDER BY observed_at DESC LIMIT 30').all<any>();
+  const performance=await env.DB.prepare("SELECT division_id,COUNT(*) AS trades,SUM(CASE WHEN net_pnl_usd>0 THEN 1 ELSE 0 END) AS wins,COALESCE(SUM(net_pnl_usd),0) AS netPnl,MAX(closed_at) AS lastClosedAt FROM division_performance WHERE source='paper' GROUP BY division_id").all<any>();
+  return json({ok:true,divisions:divisions.results,performance:performance.results,decisions:decisions.results.map((r:any)=>({...r,selected:JSON.parse(r.selected_json),assessments:JSON.parse(r.assessments_json),rationale:JSON.parse(r.rationale_json)})),kpi:{aspirationalReturnPct:98,guaranteed:false,priority:'capital-preservation'},liveTradingEnabled:false});
+ }
+ if(path==='/api/adaptive-trading/evaluate'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>null) as {evidence?:MarketEvidence;totalCapitalUsd?:number}|null;
+  if(!body?.evidence)return json({error:'Validated market evidence is required',liveTradingEnabled:false},400);
+  const account=await getPaperAccount(env),capital=Number.isFinite(body.totalCapitalUsd)?Math.max(0,Math.min(Number(body.totalCapitalUsd),Number(account?.equity??0))):Number(account?.initial_equity??0);
+  const decision=evaluateAdaptiveTrading(body.evidence,{totalCapitalUsd:capital}),decisionId=uuid();
+  await env.DB.prepare('INSERT INTO adaptive_trading_decisions(decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json,live_trading_enabled) VALUES(?,?,?,?,?,?,?,0)').bind(decisionId,decision.symbol,decision.observedAt,decision.mode,JSON.stringify(decision.selected),JSON.stringify({scalping:decision.scalping,dayTrading:decision.dayTrading}),JSON.stringify(decision.rationale)).run();
+  await audit(env,'adaptive-trading.decision','adaptive-trading-arbitrator',{decisionId,symbol:decision.symbol,mode:decision.mode,selected:decision.selected.map(x=>x.division),standDown:decision.standDown});
+  return json({decisionId,...decision,execution:'recommendation-only; no order submitted',liveTradingEnabled:false});
+ }
  if(path==='/api/global-market/scan'&&request.method==='POST'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>({})) as {deepScanLimit?:number},limit=Number.isFinite(Number(body.deepScanLimit))?Math.min(12,Math.max(4,Number(body.deepScanLimit))):12;
