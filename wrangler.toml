@@ -18,8 +18,6 @@ class_name = "AgentOrchestrator"
 tag = "v1"
 new_sqlite_classes = ["AgentOrchestrator"]
 
-[triggers]
-crons = ["* * * * *"]
 
 [vars]
 AI_ENABLED = "true"
