@@ -241,7 +241,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   const intervals=['5m','15m','1h','4h'] as const;
   const fetched=await Promise.all(intervals.map(async interval=>{
    const raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=1000');
-   return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
+   return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<=Date.now());
   }));
   const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},account=await getPaperAccount(env),equity=Number(account?.equity??0);
   const config={...defaultInstitutionalStrategyConfig,riskPct:Math.min(.2,Number(body.riskPct??.2))};
