@@ -53,7 +53,7 @@ Read-only endpoints:
 - `GET /api/amd/forward?symbol=BTCUSDT&limit=100` — forward opportunity ledger
 - `GET /api/amd/validation/runs?symbol=BTCUSDT` — persisted replay, optimisation and walk-forward runs
 
-Historical requests are capped at 60 days and use paginated closed 5-minute candles. This is public market-data replay, not tick/order-book replay; funding, futures margin, liquidation and exchange queue-position effects are not modelled. Optimisation is research-only and must not automatically replace the configured session parameters. The forward observer is deliberately separate from the automatic paper-order path.
+Historical requests are capped at 60 days and use paginated closed 5-minute candles. This is public market-data replay, not tick/order-book replay; funding, futures margin, liquidation and exchange queue-position effects are not modelled. Optimisation is research-only and must not automatically replace the configured session parameters. The forward observer records all opportunities independently; the optional paper-order extension is separately gated by both safety switches and remains disabled by default.
 
 ## Implemented backend foundation
 
