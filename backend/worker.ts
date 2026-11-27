@@ -17,9 +17,9 @@ interface DurableStorage { get<T=any>(key:string):Promise<T|undefined>; put(key:
 interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
-interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string }
+interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
@@ -105,6 +105,35 @@ async function createPaperOrder(env:Env,body:any){
  return {position:{positionId,symbol,side:'long',quantity:plan.quantity,entryPrice:plan.averageFillPrice,stopPrice,targetPrice,riskPct:plan.actualRiskPct,entryFee:plan.entryFee,status:'open',openedAt:now},execution:{referencePrice:plan.referencePrice,slippageBps:plan.slippageBps,netRewardRisk:plan.netRewardRisk},liveTradingEnabled:false};
 }
 
+async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperRequested:boolean){
+ const intervals=['5m','15m','1h','4h'] as const;
+ const fetched=await Promise.all(intervals.map(async interval=>{
+  const raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=1000');
+  return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<=Date.now());
+ }));
+ const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},account=await getPaperAccount(env),equity=Number(account?.equity??0);
+ const config={...defaultInstitutionalStrategyConfig,riskPct:Math.min(.2,Number(.2))};
+ const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());
+ const replay=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000);
+ const walkForward=walkForwardInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000,4);
+ const oos=walkForward.outOfSample?.metrics??null,returns=(replay.valid?replay.trades:[]).map(t=>t.netPct),monteCarlo=monteCarloRisk(returns,2000,100,42),costSensitivity=[0,5,10].map(extraBps=>{const scenario=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},{...config,slippageBps:config.slippageBps+extraBps},10000);return {extraSlippageBps:extraBps,metrics:scenario.metrics};}),qualification={status:'research-only',liveExecutionEnabled:false,checks:{replayValid:replay.valid,walkForwardValid:walkForward.valid,minimumReplayTrades:(replay.metrics?.tradeCount??0)>=100,minimumOosTrades:(oos?.tradeCount??0)>=50,positiveOosExpectancy:(oos?.expectancy??0)>0,drawdownWithinPolicy:(oos?.maxDrawdownPct??100)<=5},reasons:[] as string[]};
+ for(const [key,passed] of Object.entries(qualification.checks))if(!passed)qualification.reasons.push(key+' not satisfied');
+ const runId=uuid(),createdAt=Date.now();let paperExecution:any={attempted:false,opened:false,reason:'Automatic paper entry not requested'};
+ if(autoPaperRequested){
+  if(env.AUTO_PAPER_ENABLED!=='true')paperExecution={attempted:false,opened:false,reason:'Automatic paper entries are disabled by the AUTO_PAPER_ENABLED safety switch'};
+  else{
+   const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
+   if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
+   else if(!nearPlan||!geometry)paperExecution={attempted:false,opened:false,reason:'Current executable price is not sufficiently close to the planned entry or violates stop/target geometry'};
+   else{const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:config.riskPct,feeBps:config.feeBps,strategy:'institutional-mtf-v1'});paperExecution={attempted:true,opened:!!order.position,...order};}
+  }
+ }
+ const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,monteCarlo,costSensitivity,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
+ await env.DB.prepare('INSERT INTO institutional_strategy_runs(run_id,symbol,mode,strategy_version,created_at,result_json,qualification_json) VALUES(?,?,?,?,?,?,?)').bind(runId,symbol,autoPaperRequested?'automatic-paper':'analysis','institutional-mtf-v1',createdAt,JSON.stringify(result),JSON.stringify(qualification)).run();
+ await env.DB.batch(Object.entries(qualification.checks).map(([stage,passed])=>env.DB.prepare('INSERT INTO strategy_qualification_evidence(evidence_id,strategy_id,version,stage,passed,metrics_json,created_at) VALUES(?,?,?,?,?,?,?)').bind(uuid(),'institutional-mtf','1.0.0',stage,passed?1:0,JSON.stringify({runId,replay:replay.metrics,oos,walkForward:walkForward.aggregate}),createdAt)));
+ await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
+ return result;
+}
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
  const mtfRows=await Promise.all(['5m','15m','1h','4h'].map(async interval=>{const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=80');const closes=rows.map(k=>Number(k[4]));const fast=ema(closes,9),slow=ema(closes,21);return {interval,fast,slow,direction:fast===null||slow===null?'unknown':fast>slow?'bullish':fast<slow?'bearish':'neutral',lastClose:closes[closes.length-1]};}));
@@ -238,30 +267,7 @@ async function route(request:Request,env:Env):Promise<Response>{
  if(path==='/api/institutional/strategy/run'&&request.method==='POST'){
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid symbol'},400);
-  const intervals=['5m','15m','1h','4h'] as const;
-  const fetched=await Promise.all(intervals.map(async interval=>{
-   const raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=1000');
-   return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<=Date.now());
-  }));
-  const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},account=await getPaperAccount(env),equity=Number(account?.equity??0);
-  const config={...defaultInstitutionalStrategyConfig,riskPct:Math.min(.2,Number(body.riskPct??.2))};
-  const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());
-  const replay=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000);
-  const walkForward=walkForwardInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000,4);
-  const oos=walkForward.outOfSample?.metrics??null,returns=(replay.valid?replay.trades:[]).map(t=>t.netPct),monteCarlo=monteCarloRisk(returns,2000,100,42),costSensitivity=[0,5,10].map(extraBps=>{const scenario=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},{...config,slippageBps:config.slippageBps+extraBps},10000);return {extraSlippageBps:extraBps,metrics:scenario.metrics};}),qualification={status:'research-only',liveExecutionEnabled:false,checks:{replayValid:replay.valid,walkForwardValid:walkForward.valid,minimumReplayTrades:(replay.metrics?.tradeCount??0)>=100,minimumOosTrades:(oos?.tradeCount??0)>=50,positiveOosExpectancy:(oos?.expectancy??0)>0,drawdownWithinPolicy:(oos?.maxDrawdownPct??100)<=5},reasons:[] as string[]};
-  for(const [key,passed] of Object.entries(qualification.checks))if(!passed)qualification.reasons.push(key+' not satisfied');
-  const runId=uuid(),createdAt=Date.now(),autoPaperRequested=body.autoPaper===true;let paperExecution:any={attempted:false,opened:false,reason:'Automatic paper entry not requested'};
-  if(autoPaperRequested){
-   const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
-   if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
-   else if(!nearPlan||!geometry)paperExecution={attempted:false,opened:false,reason:'Current executable price is not sufficiently close to the planned entry or violates stop/target geometry'};
-   else{const result=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:config.riskPct,feeBps:config.feeBps,strategy:'institutional-mtf-v1'});paperExecution={attempted:true,opened:!!result.position, ...result};}
-  }
-  const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,monteCarlo,costSensitivity,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
-  await env.DB.prepare('INSERT INTO institutional_strategy_runs(run_id,symbol,mode,strategy_version,created_at,result_json,qualification_json) VALUES(?,?,?,?,?,?,?)').bind(runId,symbol,autoPaperRequested?'automatic-paper':'analysis','institutional-mtf-v1',createdAt,JSON.stringify(result),JSON.stringify(qualification)).run();
-  await env.DB.batch(Object.entries(qualification.checks).map(([stage,passed])=>env.DB.prepare('INSERT INTO strategy_qualification_evidence(evidence_id,strategy_id,version,stage,passed,metrics_json,created_at) VALUES(?,?,?,?,?,?,?)').bind(uuid(),'institutional-mtf','1.0.0',stage,passed?1:0,JSON.stringify({runId,replay:replay.metrics,oos,walkForward:walkForward.aggregate}),createdAt)));
-  await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
-  return json(result);
+  return json(await runInstitutionalStrategyWorkflow(env,symbol,body.autoPaper===true));
  }
  if(path==='/api/institutional/strategy/latest'&&request.method==='GET'){
   const symbol=String(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase();
@@ -295,7 +301,7 @@ async function route(request:Request,env:Env):Promise<Response>{
 }
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{try{return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},
- async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan',symbol,createdAt},{id:uuid(),kind:'institutional-scan',symbol,createdAt}]);await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
+ async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan',symbol,createdAt},{id:uuid(),kind:'institutional-scan',symbol,createdAt}]);if(env.AUTO_PAPER_ENABLED==='true'&&new Date(createdAt).getUTCMinutes()%5===0)tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
@@ -329,6 +335,10 @@ export class AgentOrchestrator {
      queue.push(...roleTasks);
      await this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify({analysisId,roleTasks:roleTasks.length}),task.id).run();
      await audit(this.env,'institutional.scheduled.scan.completed','institutional-intelligence-engine',{analysisId,symbol:task.symbol,roleTasks:roleTasks.length});
+    }else if(task.kind==='institutional-strategy-scan'){
+     if(this.env.AUTO_PAPER_ENABLED!=='true')throw new Error('Automatic paper strategy workflow is disabled');
+     const result=await runInstitutionalStrategyWorkflow(this.env,task.symbol,true);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'institutional:supervisor','institutional-strategy-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
      const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
      const evidence=handlerForInstitutionalFinding(finding,rt);
