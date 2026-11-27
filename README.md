@@ -22,7 +22,7 @@ The primary organisation is deliberately kept at **12 departments and exactly 16
 | Solana Token Intelligence | 5 |
 | **Total** | **162** |
 
-Five cross-cutting capabilities are implemented as shared platform services rather than extra departments or role-count inflation: Order Book & Market Depth Intelligence; Portfolio Allocation Intelligence; AI Learning, Memory & Performance; Agent Collaboration & Orchestration; and Failure Prevention & Incident Response.
+Five cross-cutting capabilities are catalogued as shared platform service domains rather than extra departments or role-count inflation: Order Book & Market Depth Intelligence; Portfolio Allocation Intelligence; AI Learning, Memory & Performance; Agent Collaboration & Orchestration; and Failure Prevention & Incident Response.
 
 The catalogue includes 10 scalping bots, 10 day-trading bots and 19 advanced strategy bot definitions (39 total). Registered agents and bot definitions are not the same as running autonomous workers.
 
@@ -37,6 +37,19 @@ The catalogue includes 10 scalping bots, 10 day-trading bots and 19 advanced str
 - **Historical backtesting API** using Binance candles and a spot long-only EMA crossover research strategy. Fills are modelled at the next candle open; configurable fee and slippage assumptions are applied on entry and exit; intratrade favourable/adverse excursions and drawdown are marked using candle highs/lows; results include net P&L, win rate, profit factor, expectancy and a 70/30 in-sample/out-of-sample split.
 - **Shared intelligence and risk primitives** for order-book imbalance, weighted imbalance, cumulative depth, microprice, trade imbalance, market reports, evidence arbitration, capital veto, trader qualification, portfolio stress and deployment qualification.
 - **Dashboard market prices** now come from the backend API. Synthetic random price movement, fabricated ticker changes, synthetic paper P&L and fake agent activity were removed. Account equity remains unconfigured until a reconciled account source exists.
+
+### Backend API surface
+
+- `GET /health`, `GET /api/providers`, `GET /api/registry`, `GET /api/agents`
+- `GET /api/agent-tasks`, `GET /api/decisions`, `GET /api/audit`, `GET /api/portfolio`
+- `GET /api/market/tickers`, `GET /api/market/klines`, `GET /api/market/depth`
+- `GET /api/market/bitget/tickers` for public Bitget Spot/Margin-reference and futures-category tickers
+- `GET /api/solana/new-pools` and `GET /api/solana/pairs?token=...`
+- `POST /api/scan`, `POST /api/backtest`, and `GET /api/backtests`
+
+### Department runtime coverage
+
+The registry API reports handler coverage explicitly. The scheduled market scanner, central capital veto, signal evidence arbitration, regime selector, shared analytical primitives and on-demand EMA backtest are connected to backend services. The remaining departments are registered but do not yet have independent worker handlers. No API response treats a registered role as a running process.
 
 ## Local development
 
@@ -66,7 +79,7 @@ The Worker requires the D1 and Durable Object bindings declared in `wrangler.tom
 **Capital protection is the final authority.** The decision path is market intelligence → strategy/signal validation → independent evidence arbitration → capital protection → execution eligibility. Agent consensus cannot override a risk veto.
 
 - The scheduled scanner currently produces observations and risk-gated assessments. It deliberately does not submit orders.
-- The scanner's execution-economics check remains closed until a validated strategy entry/stop/target model and venue-specific fee schedule are configured.
+- The scanner's execution-economics and per-trade-risk checks remain closed until a validated strategy entry/stop/target model, calculated position-risk budget and venue-specific fee schedule are configured.
 - No primary account is configured or reconciled. The capital authority therefore blocks entries by default.
 - Live trading is hard-disabled. No private exchange credentials, Bitget order execution adapter, margin/futures order adapter, Solana DEX swap adapter or withdrawal capability is connected. Bitget public market-data endpoints do not imply trading support.
 - Macro/news providers and source-trader discovery providers are not configured. The API reports these as unavailable instead of fabricating results.
