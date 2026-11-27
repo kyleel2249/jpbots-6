@@ -25,6 +25,8 @@ const atrPct=(candles:Candle[])=>{
   const tr=rows.slice(1).map((c,i)=>Math.max(c.high-c.low,Math.abs(c.high-rows[i].close),Math.abs(c.low-rows[i].close)));
   return mean(tr)/rows.at(-1)!.close*100;
 };
+const volumeRatio=(rows:Candle[])=>{const baseline=mean(rows.slice(-30,-5).map(c=>c.volume)),recent=mean(rows.slice(-5).map(c=>c.volume));return baseline>0?recent/baseline:0;};
+const structureShift=(rows:Candle[],side:'long'|'short')=>rows.length>=12?(side==='long'?rows.at(-1)!.close>Math.max(...rows.slice(-12,-1).map(c=>c.high)):rows.at(-1)!.close<Math.min(...rows.slice(-12,-1).map(c=>c.low))):false;
 const vwap=(candles:Candle[])=>{
   const rows=candles.slice(-30),volume=rows.reduce((s,c)=>s+c.volume,0);
   return volume>0?rows.reduce((s,c)=>s+((c.high+c.low+c.close)/3)*c.volume,0)/volume:rows.at(-1)?.close??0;
@@ -47,11 +49,14 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
   const scalpDirection=direction(one.map(c=>c.close)),dayDirection=direction(five.map(c=>c.close))===direction(hour.map(c=>c.close))?direction(five.map(c=>c.close)):'neutral';
   const bid=book.bids[0].price,ask=book.asks[0].price,spreadBps=(ask-bid)/mid*10000;
   const depthUsd=book.bids.slice(0,20).reduce((s,l)=>s+l.price*l.quantity,0)+book.asks.slice(0,20).reduce((s,l)=>s+l.price*l.quantity,0);
-  const last=one.at(-1)!,baseline=mean(one.slice(-30,-5).map(c=>c.volume)),recent=mean(one.slice(-5).map(c=>c.volume));
   const feeBps=input.feeBps??10;
-  const longFvg=hasBullishFvg(five),shortFvg=hasBearishFvg(five),dayFvg=dayDirection==='short'?shortFvg:longFvg;
-  const daySweep=sweep(five,dayDirection==='short'?'short':'long');
-  const scalpSweep=sweep(one,scalpDirection==='short'?'short':'long');
+  const scalpSide=scalpDirection==='short'?'short':'long',daySide=dayDirection==='short'?'short':'long';
+  const scalpFvg=scalpSide==='short'?hasBearishFvg(one):hasBullishFvg(one),dayFvg=daySide==='short'?hasBearishFvg(five):hasBullishFvg(five);
+  const scalpSweep=sweep(one,scalpSide),daySweep=sweep(five,daySide);
+  const scalpMss=structureShift(one,scalpSide),dayMss=structureShift(five,daySide);
+  const scalpVwapAligned=scalpDirection==='long'?mid>=vwap(one):scalpDirection==='short'?mid<=vwap(one):false;
+  const dayVwapAligned=dayDirection==='long'?mid>=vwap(five):dayDirection==='short'?mid<=vwap(five):false;
+  const scalpVolumeRatio=volumeRatio(one),dayVolumeRatio=volumeRatio(five),scalpVolatility=atrPct(one),dayVolatility=atrPct(five);
   const dayImbalance=imbalance(book),scalpImbalance=imbalance(book);
   const vwapAligned=dayDirection==='long'?mid>=vwap(five):dayDirection==='short'?mid<=vwap(five):false;
   return {
@@ -60,13 +65,14 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     scalpingOrderBookImbalance:scalpImbalance,dayTradingOrderBookImbalance:dayImbalance,
     dayTradingTrendAlignment:dayDirection==='long'?1:dayDirection==='short'?-1:0,
     observedAt:now,spreadBps,estimatedRoundTripCostBps:spreadBps+feeBps*2+2,
-    volatilityPct:atrPct(one),volumeRatio:baseline>0?recent/baseline:0,
+    volatilityPct:scalpVolatility,volumeRatio:scalpVolumeRatio,scalpingVolumeRatio:scalpVolumeRatio,dayTradingVolumeRatio:dayVolumeRatio,
+    scalpingVolatilityPct:scalpVolatility,dayTradingVolatilityPct:dayVolatility,
+    scalpingFvg:scalpFvg,dayTradingFvg:dayFvg,scalpingLiquiditySweep:scalpSweep,dayTradingLiquiditySweep:daySweep,
+    scalpingMarketStructureShift:scalpMss,dayTradingMarketStructureShift:dayMss,scalpingVwapAligned,dayTradingVwapAligned:dayVwapAligned,
     trendAlignment:scalpDirection==='long'?1:scalpDirection==='short'?-1:0,
-    orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:atrPct(five),scalpingAtrPct:atrPct(one),dayTradingAtrPct:atrPct(five),
+    orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:dayVolatility,scalpingAtrPct:scalpVolatility,dayTradingAtrPct:dayVolatility,
     dataAgeMs:Math.max(0,now-book.timestamp),scalpingDataAgeMs:book.trades?.length?Math.max(0,now-Math.max(...book.trades.map(t=>t.timestamp))):Number.MAX_SAFE_INTEGER,dayTradingDataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
-    fvg:dayFvg||longFvg||shortFvg,liquiditySweep:daySweep||scalpSweep,
-    marketStructureShift:(dayDirection==='long'&&five.at(-1)!.close>Math.max(...five.slice(-12,-1).map(c=>c.high)))||(dayDirection==='short'&&five.at(-1)!.close<Math.min(...five.slice(-12,-1).map(c=>c.low))),
-    vwapAligned,fundingExtreme:false
+    fvg:dayFvg||scalpFvg,liquiditySweep:daySweep||scalpSweep,marketStructureShift:dayMss,vwapAligned:dayVwapAligned,fundingExtreme:false
   };
 }
 export type LongPaperLevels={valid:false;reason:string}|{valid:true;entry:number;stop:number;target:number;stopDistancePct:number;netRewardRisk:number};
