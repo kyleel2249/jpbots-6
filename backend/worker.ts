@@ -509,6 +509,30 @@ async function route(request:Request,env:Env):Promise<Response>{
   const [states,assignments]=await Promise.all([env.DB.prepare('SELECT role_id,enabled,status,heartbeat_at,last_error,updated_at FROM agent_state').all<any>(),env.DB.prepare('SELECT role_id,division_id,symbol,timeframe,status,assignment_source,assigned_at,updated_at FROM agent_assignments').all<any>()]),byId=new Map(states.results.map(x=>[x.role_id,x])),byAssignment=new Map(assignments.results.map(x=>[x.role_id,x]));
   return json({registered:allAgentRoles.length,agents:allAgentRoles.map((r,i)=>{const id=r.departmentId+':'+r.name,state=byId.get(id),assignment=byAssignment.get(id),enabled=state?.enabled===1,divisionId=r.departmentId==='scalp'?'scalping':r.departmentId==='day'?'day-trading':'shared';return {id,sequence:i+1,name:r.name,department:r.department,departmentId:r.departmentId,divisionId,task:r.task,enabled,status:!enabled?'PAUSED':assignment?.status??state?.status??'AWAITING_ASSIGNMENT',symbol:assignment?.symbol??null,timeframe:assignment?.timeframe??(r.departmentId==='scalp'?'1m/3m/5m':r.departmentId==='day'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME'),assignmentSource:assignment?.assignment_source??null,assignedAt:assignment?.assigned_at??null,heartbeatAt:state?.heartbeat_at??null,lastError:state?.last_error??null,workerProcessRunning:false,executionScope:r.departmentId==='scalp'?'SCALPING_DIVISION_POLICY':r.departmentId==='day'?'DAY_TRADING_DIVISION_POLICY':r.departmentId==='institutional'?'INSTITUTIONAL_EVIDENCE_HANDLER':'SHARED_INTELLIGENCE'};})});
  }
+ if(path==='/api/agents/control-all'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any;
+  if(typeof body.enabled!=='boolean')return json({error:'A boolean enabled value is required'},400);
+  const enabled=body.enabled,now=Date.now(),statements:D1Statement[]=[];
+  let supportedCount=0,awaitingCapabilityCount=0;
+  for(const role of allAgentRoles){
+   const roleId=role.departmentId+':'+role.name,divisionId=role.departmentId==='scalp'?'scalping':role.departmentId==='day'?'day-trading':'shared';
+   const supported=role.departmentId==='institutional'||(role.departmentId==='scalp'&&role.name==='Scalping Market Scanner')||(role.departmentId==='day'&&role.name==='Intraday Market Scanner');
+   const status=enabled?(supported?'AWAITING_MARKET_DATA':'AWAITING_CAPABILITY'):'PAUSED';
+   if(enabled&&supported)supportedCount++;else if(enabled)awaitingCapabilityCount++;
+   const error=enabled?(supported?'Waiting for the next fresh eligible market scan':'This specialist role has no independent scheduled execution handler yet'):null;
+   const timeframe=role.departmentId==='scalp'?'1m/3m/5m':role.departmentId==='day'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME';
+   statements.push(env.DB.prepare("INSERT INTO agent_state(role_id,enabled,status,heartbeat_at,last_error,updated_at) VALUES(?,?,?,NULL,?,?) ON CONFLICT(role_id) DO UPDATE SET enabled=excluded.enabled,status=excluded.status,last_error=excluded.last_error,updated_at=excluded.updated_at").bind(roleId,enabled?1:0,status,error,now));
+   statements.push(env.DB.prepare("INSERT INTO agent_assignments(role_id,division_id,symbol,timeframe,status,assignment_source,assigned_at,updated_at) VALUES(?,?,NULL,?,?,NULL,NULL,?) ON CONFLICT(role_id) DO UPDATE SET division_id=excluded.division_id,symbol=NULL,timeframe=excluded.timeframe,status=excluded.status,assignment_source=NULL,assigned_at=NULL,updated_at=excluded.updated_at").bind(roleId,divisionId,timeframe,status,now));
+  }
+  statements.push(env.DB.prepare("INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)").bind(uuid(),enabled?'agents.bulk_activated':'agents.bulk_deactivated','operator',now,JSON.stringify({enabled,total:allAgentRoles.length,supportedCount,awaitingCapabilityCount})));
+  // Chunk batches to stay below D1's per-batch statement limit.
+  for(let i=0;i<statements.length;i+=80)await env.DB.batch(statements.slice(i,i+80));
+  await env.DB.batch([
+   env.DB.prepare('UPDATE trading_divisions SET enabled=0,updated_at=? WHERE division_id IN (?,?)').bind(now,'scalping','day-trading')
+  ]);
+  return json({ok:true,enabled,total:allAgentRoles.length,supportedCount,awaitingCapabilityCount,status:enabled?'ACTIVATION_REQUESTED':'PAUSED',message:enabled?'All registered roles have been enabled; supported roles await the next eligible market scan and unsupported roles remain capability-gated.':'All registered roles have been disabled; division scanners are stopped.',liveTradingEnabled:false});
+ }
  if(path==='/api/agents/control'&&request.method==='POST'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>({})) as any,roleId=String(body.roleId||''),enabled=body.enabled===true;
