@@ -545,7 +545,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>null) as {evidence?:MarketEvidence;totalCapitalUsd?:number}|null;
   if(!body?.evidence)return json({error:'Validated market evidence is required',liveTradingEnabled:false},400);
-  const account=await getPaperAccount(env),capital=Number.isFinite(body.totalCapitalUsd)?Math.max(0,Math.min(Number(body.totalCapitalUsd),Number(account?.equity??0))):Number(account?.initial_equity??0);
+  const account=await getPaperAccount(env),capital=Number.isFinite(body.totalCapitalUsd)?Math.max(0,Math.min(Number(body.totalCapitalUsd),Number(account?.equity??0))):Number(account?.equity??0);
   const decision=evaluateAdaptiveTrading(body.evidence,{totalCapitalUsd:capital}),decisionId=uuid();
   await env.DB.prepare('INSERT INTO adaptive_trading_decisions(decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json,live_trading_enabled) VALUES(?,?,?,?,?,?,?,0)').bind(decisionId,decision.symbol,decision.observedAt,decision.mode,JSON.stringify(decision.selected),JSON.stringify({scalping:decision.scalping,dayTrading:decision.dayTrading}),JSON.stringify(decision.rationale)).run();
   await audit(env,'adaptive-trading.decision','adaptive-trading-arbitrator',{decisionId,symbol:decision.symbol,mode:decision.mode,selected:decision.selected.map(x=>x.division),standDown:decision.standDown});
