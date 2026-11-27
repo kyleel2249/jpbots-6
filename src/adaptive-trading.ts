@@ -5,7 +5,7 @@ export interface MarketEvidence {
   symbol:string; assetClass:string; price:number; direction:Direction; scalpingDirection?:Direction; dayTradingDirection?:Direction; scalpingOrderBookImbalance?:number; dayTradingOrderBookImbalance?:number; dayTradingTrendAlignment?:number; observedAt:number;
   spreadBps:number; estimatedRoundTripCostBps:number; volatilityPct:number; volumeRatio:number;
   trendAlignment:number; orderBookImbalance:number; liquidityUsd:number; atrPct:number;
-  dataAgeMs:number; sessionEligible:boolean; scalpingAtrPct?:number; dayTradingAtrPct?:number; fvg:boolean; liquiditySweep:boolean;
+  dataAgeMs:number; scalpingDataAgeMs?:number; dayTradingDataAgeMs?:number; sessionEligible:boolean; scalpingAtrPct?:number; dayTradingAtrPct?:number; fvg:boolean; liquiditySweep:boolean;
   marketStructureShift:boolean; vwapAligned:boolean; fundingExtreme?:boolean;
 }
 export interface DivisionPolicy {
@@ -28,10 +28,11 @@ export const DEFAULT_DIVISION_POLICIES:Record<TradingDivision,DivisionPolicy>={
   'day-trading':{allocationUsd:3,maxRiskPerTradePct:0.5,maxDailyLossPct:2,maxOpenPositions:3,minScore:70,maxSpreadBps:18,maxRoundTripCostBps:28,minLiquidityUsd:10000}
 };
 const clamp=(n:number,min=0,max=100)=>Math.max(min,Math.min(max,n));
-function validate(e:MarketEvidence){if(!e||typeof e.symbol!=='string'||!e.symbol.trim())throw new Error('A market symbol is required');for(const k of ['price','observedAt','spreadBps','estimatedRoundTripCostBps','volatilityPct','volumeRatio','trendAlignment','orderBookImbalance','liquidityUsd','atrPct','dataAgeMs'] as const)if(!Number.isFinite(e[k]))throw new Error('Invalid market evidence: '+k);if(e.price<=0||e.spreadBps<0||e.estimatedRoundTripCostBps<0||e.liquidityUsd<0||e.dataAgeMs<0)throw new Error('Market evidence contains impossible values');if(!['long','short','neutral'].includes(e.direction)||!['long','short','neutral'].includes(e.scalpingDirection??e.direction)||!['long','short','neutral'].includes(e.dayTradingDirection??e.direction))throw new Error('Invalid market direction');for(const k of ['orderBookImbalance','trendAlignment','scalpingOrderBookImbalance','dayTradingOrderBookImbalance','dayTradingTrendAlignment'] as const){const v=e[k];if(v!==undefined&&(!Number.isFinite(v)||v < -1||v > 1))throw new Error('Invalid directional evidence: '+k);}}
+function validate(e:MarketEvidence){if(!e||typeof e.symbol!=='string'||!e.symbol.trim())throw new Error('A market symbol is required');for(const k of ['price','observedAt','spreadBps','estimatedRoundTripCostBps','volatilityPct','volumeRatio','trendAlignment','orderBookImbalance','liquidityUsd','atrPct','dataAgeMs'] as const)if(!Number.isFinite(e[k]))throw new Error('Invalid market evidence: '+k);if(e.price<=0||e.spreadBps<0||e.estimatedRoundTripCostBps<0||e.liquidityUsd<0||e.dataAgeMs<0)throw new Error('Market evidence contains impossible values');if(!['long','short','neutral'].includes(e.direction)||!['long','short','neutral'].includes(e.scalpingDirection??e.direction)||!['long','short','neutral'].includes(e.dayTradingDirection??e.direction))throw new Error('Invalid market direction');for(const k of ['scalpingDataAgeMs','dayTradingDataAgeMs','orderBookImbalance','trendAlignment','scalpingOrderBookImbalance','dayTradingOrderBookImbalance','dayTradingTrendAlignment'] as const){const v=e[k];if(v!==undefined&&(!Number.isFinite(v)||(k.includes('DataAge')?v<0:v < -1||v > 1)))throw new Error('Invalid directional evidence: '+k);}}
 function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy):DivisionAssessment{
  const reasons:string[]=[],vetoes:string[]=[];
- const fresh=e.dataAgeMs<=(division==='scalping'?5000:60000);
+ const age=division==='scalping'?(e.scalpingDataAgeMs??e.dataAgeMs):(e.dayTradingDataAgeMs??e.dataAgeMs);
+ const fresh=age<=(division==='scalping'?5000:60000);
  if(!fresh)vetoes.push('Market data is stale for this trading horizon');
  const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);
  const imbalance=division==='scalping'?(e.scalpingOrderBookImbalance??e.orderBookImbalance):(e.dayTradingOrderBookImbalance??e.orderBookImbalance);
