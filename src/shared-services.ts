@@ -75,11 +75,11 @@ export function authorizeTrade(input:{evidence:Evidence[];checks:{dataFresh:bool
  const approved=arbitration.decision==='eligible-for-risk-authorisation'&&risk.allowNewEntries&&scalp.allowed;
  return {approved,decision:approved?'paper-order-eligible':'rejected',mode:'paper' as const,liveExecutionEnabled:false as const,risk,arbitration,scalping:scalp,finalAuthority:'capital-protection'};
 }
-export function authorizeOrder(input:{signalApproved:boolean;capital:CapitalState;proposedRiskPct:number;market:'spot'|'margin'|'usdt-m'|'coin-m'|'usdc-m';quantity:number;price?:number;minQuantity:number;quantityStep:number;priceTick?:number;liveRequested?:boolean}){
- const risk=capitalAuthority(input.capital),errors=[...risk.reasons];
- if(!Number.isFinite(input.proposedRiskPct)||input.proposedRiskPct<=0)errors.push('proposed per-trade risk is missing or invalid');else if(input.proposedRiskPct>defaultCapitalPolicy.maxRiskPerTradePct)errors.push('proposed per-trade risk exceeds capital policy');
+export function authorizeOrder(input:{signalApproved:boolean;capital:CapitalState;proposedRiskPct:number;market:'spot'|'margin'|'usdt-m'|'coin-m'|'usdc-m';quantity:number;price?:number;minQuantity:number;quantityStep:number;priceTick?:number;liveRequested?:boolean;policy?:CapitalPolicy}){
+ const policy=input.policy??defaultCapitalPolicy,risk=capitalAuthority(input.capital,policy),errors=[...risk.reasons];
+ if(!Number.isFinite(input.proposedRiskPct)||input.proposedRiskPct<=0)errors.push('proposed per-trade risk is missing or invalid');else if(input.proposedRiskPct>policy.maxRiskPerTradePct)errors.push('proposed per-trade risk exceeds capital policy');
  if(!input.signalApproved)errors.push('signal not approved');if(input.liveRequested)errors.push('live execution disabled');
- if(!Number.isFinite(input.quantity)||input.quantity<input.minQuantity)errors.push('quantity below minimum or invalid');
+ if(!Number.isFinite(input.minQuantity)||input.minQuantity<0||!Number.isFinite(input.quantity)||input.quantity<input.minQuantity)errors.push('quantity below minimum or invalid');
  if(!Number.isFinite(input.quantityStep)||input.quantityStep<=0||Math.abs(input.quantity/input.quantityStep-Math.round(input.quantity/input.quantityStep))>1e-8)errors.push('quantity precision invalid');
  if(input.price!==undefined&&(!Number.isFinite(input.price)||input.price<=0))errors.push('price invalid');
  if(input.priceTick!==undefined&&(!Number.isFinite(input.priceTick)||input.priceTick<=0||input.price===undefined||Math.abs(input.price/input.priceTick-Math.round(input.price/input.priceTick))>1e-8))errors.push('price precision invalid');
