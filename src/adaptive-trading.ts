@@ -2,7 +2,7 @@ export type TradingDivision = 'scalping' | 'day-trading';
 export type AdaptiveMode = 'SCALPING' | 'DAY_TRADING' | 'COMBINATION' | 'NEITHER';
 export type Direction = 'long' | 'short' | 'neutral';
 export interface MarketEvidence {
-  symbol:string; assetClass:string; price:number; direction:Direction; observedAt:number;
+  symbol:string; assetClass:string; price:number; direction:Direction; scalpingDirection?:Direction; dayTradingDirection?:Direction; observedAt:number;
   spreadBps:number; estimatedRoundTripCostBps:number; volatilityPct:number; volumeRatio:number;
   trendAlignment:number; orderBookImbalance:number; liquidityUsd:number; atrPct:number;
   dataAgeMs:number; sessionEligible:boolean; fvg:boolean; liquiditySweep:boolean;
@@ -33,7 +33,7 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
  const reasons:string[]=[],vetoes:string[]=[];
  const fresh=e.dataAgeMs<=(division==='scalping'?5000:60000);
  if(!fresh)vetoes.push('Market data is stale for this trading horizon');
- if(e.direction==='neutral')vetoes.push('No directional edge');
+ const direction=division==='scalping'?(e.scalpingDirection??e.direction):(e.dayTradingDirection??e.direction);\n if(direction==='neutral')vetoes.push('No directional edge');
  if(e.spreadBps>policy.maxSpreadBps)vetoes.push('Spread exceeds division limit');
  if(e.estimatedRoundTripCostBps>policy.maxRoundTripCostBps)vetoes.push('Estimated round-trip costs exceed division limit');
  if(e.liquidityUsd<policy.minLiquidityUsd)vetoes.push('Insufficient verified liquidity');
@@ -65,7 +65,7 @@ function assess(e:MarketEvidence,division:TradingDivision,policy:DivisionPolicy)
  if(e.fundingExtreme)reasons.push('Extreme funding flagged for independent derivatives-risk review');
  if(score<policy.minScore)vetoes.push('Evidence score below division entry threshold');
  if(!vetoes.length)reasons.push('All division-specific market quality gates passed');
- return {division,score:Math.round(score*100)/100,eligible:vetoes.length===0,direction:e.direction,strategy:strategy,reasons,vetoes,riskBudgetUsd:policy.allocationUsd*policy.maxRiskPerTradePct/100};
+ return {division,score:Math.round(score*100)/100,eligible:vetoes.length===0,direction,strategy:strategy,reasons,vetoes,riskBudgetUsd:policy.allocationUsd*policy.maxRiskPerTradePct/100};
 }
 
 export function evaluateAdaptiveTrading(e:MarketEvidence,options?:{totalCapitalUsd?:number;policies?:Partial<Record<TradingDivision,Partial<DivisionPolicy>>>}):AdaptiveDecision{
