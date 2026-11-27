@@ -498,7 +498,7 @@ async function route(request:Request,env:Env):Promise<Response>{
  return json({error:'Not found',path},404);
 }
 export default {
- async fetch(request:Request,env:Env):Promise<Response>{try{const id=env.ORCHESTRATOR.idFromName('global');await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/ensure-schedule');return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},body:JSON.stringify(tasks)});}
+ async fetch(request:Request,env:Env):Promise<Response>{try{const id=env.ORCHESTRATOR.idFromName('global');await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/ensure-schedule');return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
