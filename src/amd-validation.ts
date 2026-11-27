@@ -103,7 +103,7 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
 function splitByLocalDays(candles:StrategyCandle[],timezone:string,ratio:number){const dates=[...new Set(candles.map(c=>local(c,timezone).date))].sort(),cut=Math.max(1,Math.min(dates.length-1,Math.floor(dates.length*ratio))),trainDates=new Set(dates.slice(0,cut));return {train:candles.filter(c=>trainDates.has(local(c,timezone).date)),test:candles.filter(c=>!trainDates.has(local(c,timezone).date))};}
 export type AmdOptimisationCandidate={config:AmdValidationConfig;train:AmdMetrics;holdout:AmdMetrics;score:number;robust:boolean};
 export function optimiseAmdParameters(candles:StrategyCandle[],options:{timezones?:string[];sweepSensitivitiesBps?:number[];arrayStrengths?:number[];minTrainTrades?:number;minHoldoutTrades?:number}={}){
- const timezones=[...new Set(options.timezones??[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London','America/New_York'])].slice(0,6);
+ const requestedTimezones=[...new Set(options.timezones??[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London','America/New_York'])].slice(0,6),invalidTimezones=requestedTimezones.filter(tz=>{try{new Intl.DateTimeFormat('en-US',{timeZone:tz});return false;}catch{return true;}}),timezones=requestedTimezones.filter(tz=>!invalidTimezones.includes(tz));
  const sweeps=(options.sweepSensitivitiesBps??[0,3,5,10]).slice(0,6),strengths=(options.arrayStrengths??[65,70,75,80]).slice(0,6);
  const candidates:AmdOptimisationCandidate[]=[];
  for(const timezone of timezones)for(const sweep of sweeps)for(const strength of strengths){
