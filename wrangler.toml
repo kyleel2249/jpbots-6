@@ -19,3 +19,10 @@ new_sqlite_classes = ["AgentOrchestrator"]
 
 [triggers]
 crons = ["* * * * *"]
+
+[vars]
+AI_ENABLED = "false"
+AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
+
+[ai]
+binding = "AI"
