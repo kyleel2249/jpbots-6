@@ -6,6 +6,8 @@ import { analyseOrderBook, capitalAuthority, defaultCapitalPolicy } from '../src
 import type { Evidence, OrderBookSnapshot, CapitalState } from '../src/shared-services';
 import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 import { runDepartmentCouncil, type WorkersAiBinding } from '../src/agent-runtime';
+import { analyseInstitutionalMarket } from '../src/institutional-intelligence';
+import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -16,7 +18,7 @@ interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan';symbol:string;createdAt:number;attempts?:number};
+type Task={id:string;kind:'market-scan'|'institutional-role';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
@@ -189,6 +191,30 @@ async function route(request:Request,env:Env):Promise<Response>{
   await audit(env,'ai.department.analysis.completed','workers-ai-department-council',{departmentId,symbol,model,valid:result.valid,findings:result.findings.length,missingRoles:result.missingRoles.length,errors:result.errors});
   return json({departmentId,department:department.name,symbol,model,promptVersion:result.promptVersion,valid:result.valid,findings:result.findings,missingRoles:result.missingRoles,errors:result.errors,tradeAuthorized:false,liveTradingEnabled:false,execution:'analysis-only'});
  }
+ if(path==='/api/institutional/analyse'&&request.method==='POST'){
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid market symbol'},400);
+  const bundle=await marketBundle(env,symbol),raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval=1m&limit=120');
+  const candles=raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
+  const analysis=analyseInstitutionalMarket({symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades:bundle.book.trades});
+  const analysisId=uuid(),createdAt=Date.now(),tasks=analysis.findings.map(f=>({id:uuid(),kind:'institutional-role' as const,symbol,createdAt,roleId:'institutional:'+f.agent,correlationId:analysisId,payload:f}));
+  await env.DB.batch([
+   env.DB.prepare('INSERT INTO institutional_analyses(analysis_id,symbol,observed_at,source,result_json) VALUES(?,?,?,?,?)').bind(analysisId,symbol,createdAt,'Binance Spot public REST',JSON.stringify(analysis)),
+   ...tasks.map(t=>env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'queued',?,?,?,NULL)").bind(t.id,t.roleId,'institutional-role-analysis',createdAt,createdAt,JSON.stringify({symbol,analysisId,roleId:t.roleId,finding:t.payload})))
+  ]);
+  const id=env.ORCHESTRATOR.idFromName('global'),queued=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});
+  const queueResult=await queued.json() as any;
+  const report=['Institutional market analysis for '+symbol+' at '+analysis.price+'.', 'Overall assessment: '+analysis.overall.stance+'; confidence '+analysis.overall.confidence+' out of 100.',...analysis.findings.map(f=>f.agent+': '+f.summary), 'Detected '+analysis.fvg.length+' fair-value gaps and '+analysis.liquidityPools.length+' candidate liquidity pools.', 'Point of control: '+(analysis.volumeProfile?analysis.volumeProfile.poc.toFixed(6):'unavailable')+'.', 'No trade is authorised. Candidate entry zones require independent strategy, market-structure, execution-cost and capital-risk validation.',...analysis.limitations].join('\n');
+  await audit(env,'institutional.analysis.created','institutional-intelligence-engine',{analysisId,symbol,tasks:tasks.length,liveTradingEnabled:false});
+  return json({analysisId,symbol,report,taskAssignment:{requested:tasks.length,accepted:queueResult.accepted??0},candidateEntryZones:analysis.entryZones,overall:analysis.overall,liveTradingEnabled:false,execution:'paper-only-after-independent-validation'});
+ }
+ if(path==='/api/institutional/latest'&&request.method==='GET'){
+  const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase(),row=await env.DB.prepare('SELECT analysis_id,symbol,observed_at,result_json FROM institutional_analyses WHERE symbol=? ORDER BY observed_at DESC LIMIT 1').bind(symbol).first<any>();
+  if(!row)return json({error:'No institutional analysis available for this symbol'},404);
+  const a=JSON.parse(row.result_json),report='Institutional analysis for '+a.symbol+': '+a.overall.stance+' bias, confidence '+a.overall.confidence+'. '+a.findings.map((f:any)=>f.agent+': '+f.summary).join(' ');
+  return json({analysisId:row.analysis_id,symbol:row.symbol,observedAt:row.observed_at,report,fvg:a.fvg,liquidityPools:a.liquidityPools,entryZones:a.entryZones,volumeProfile:a.volumeProfile,auction:a.auction,findings:a.findings,overall:a.overall,limitations:a.limitations,liveTradingEnabled:false});
+ }
+ if(path==='/api/institutional/analyses'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT analysis_id,symbol,observed_at,source FROM institutional_analyses ORDER BY observed_at DESC LIMIT 50').all();return json({analyses:rows.results,liveTradingEnabled:false});}
  if(path==='/api/paper/account'&&request.method==='GET'){const account=await getPaperAccount(env);return json({configured:!!account,account:account?{accountId:account.account_id,mode:'paper',initialEquity:account.initial_equity,equity:account.equity,peakEquity:account.peak_equity,dailyLossPct:account.daily_loss_pct,weeklyLossPct:account.weekly_loss_pct,monthlyLossPct:account.monthly_loss_pct,openPositions:account.open_positions,updatedAt:account.updated_at}:null,liveTradingEnabled:false});}
  if(path==='/api/paper/positions'&&request.method==='GET'){const rows=await env.DB.prepare("SELECT * FROM paper_positions ORDER BY opened_at DESC LIMIT 100").all<any>();return json({positions:rows.results,liveTradingEnabled:false});}
  if(path==='/api/paper/fills'&&request.method==='GET'){const rows=await env.DB.prepare("SELECT * FROM paper_fills ORDER BY created_at DESC LIMIT 200").all<any>();return json({fills:rows.results,liveTradingEnabled:false});}
@@ -230,14 +256,31 @@ export class AgentOrchestrator {
  async fetch(request:Request):Promise<Response>{
   const url=new URL(request.url);
   if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[],lastProcessedAt=await this.state.storage.get<number>('lastProcessedAt')??null,lastError=await this.state.storage.get<string>('lastError')??null,processedCount=await this.state.storage.get<number>('processedCount')??0;return json({id:this.state.id.toString(),queued:queue.length,lastProcessedAt,lastError,processedCount,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
-  if(url.pathname==='/enqueue'&&request.method==='POST'){const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[],keys=new Set(queue.map(t=>t.kind+':'+t.symbol)),accepted=tasks.filter(t=>!keys.has(t.kind+':'+t.symbol));await this.state.storage.put('queue',[...queue,...accepted].slice(-500));await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:accepted.length,skippedDuplicates:tasks.length-accepted.length,queued:queue.length+accepted.length});}
+  if(url.pathname==='/enqueue'&&request.method==='POST'){const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[],keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||''))),accepted=tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||'')));await this.state.storage.put('queue',[...queue,...accepted].slice(-500));await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:accepted.length,skippedDuplicates:tasks.length-accepted.length,queued:queue.length+accepted.length});}
   return json({error:'Not found'},404);
  }
  async alarm():Promise<void>{
   const queue=await this.state.storage.get<Task[]>('queue')??[],batch=queue.splice(0,3);let processed=0,nextDelay=1000;
   for(const task of batch){try{
-    const result=await runMarketScan(this.env,task.symbol);
-    await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    if(task.kind==='market-scan'){
+     const result=await runMarketScan(this.env,task.symbol);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
+     const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
+     const handler=handlerForInstitutionalFinding(finding,rt),evidence=await handler(rt);
+     await this.env.DB.batch([
+      this.env.DB.prepare('INSERT OR REPLACE INTO agent_evidence(evidence_id,correlation_id,role_id,observed_at,expires_at,confidence,stance,evidence_json) VALUES(?,?,?,?,?,?,?,?)').bind(evidence.id,task.correlationId,task.roleId,evidence.observedAt,evidence.expiresAt,evidence.confidence,evidence.stance,JSON.stringify(evidence)),
+      this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify(evidence),task.id),
+      this.env.DB.prepare("INSERT INTO agent_messages(message_id,correlation_id,from_role,to_role,message_type,created_at,payload_json) VALUES(?,?,?,?,?,?,?)").bind(uuid(),task.correlationId,task.roleId,'institutional:supervisor','evidence.submitted',Date.now(),JSON.stringify(evidence)),
+      this.env.DB.prepare("INSERT INTO agent_state(role_id,enabled,status,heartbeat_at,last_error,updated_at) VALUES(?,0,'COMPLETED',?,NULL,?) ON CONFLICT(role_id) DO UPDATE SET enabled=0,status='COMPLETED',heartbeat_at=excluded.heartbeat_at,last_error=NULL,updated_at=excluded.updated_at").bind(task.roleId,Date.now(),Date.now())
+     ]);
+     const rows=await this.env.DB.prepare('SELECT evidence_json FROM agent_evidence WHERE correlation_id=? AND expires_at>?').bind(task.correlationId,Date.now()).all<any>();
+     if(rows.results.length>=10){
+      const evidenceRows=rows.results.map((r:any)=>JSON.parse(r.evidence_json) as RuntimeEvidence),decision=arbitrateRuntimeEvidence(evidenceRows,Date.now());
+      await this.env.DB.prepare("INSERT OR IGNORE INTO paper_strategy_runs(run_id,symbol,strategy_id,status,started_at,completed_at,analysis_json,decision_json) VALUES(?,?,?,'analysis-only',?,?,?,?)").bind(task.correlationId,task.symbol,'institutional-evidence-arbitration',task.createdAt,Date.now(),JSON.stringify({correlationId:task.correlationId,evidenceCount:evidenceRows.length}),JSON.stringify({...decision,approved:false,liveTradingEnabled:false})).run();
+      await this.env.DB.prepare("INSERT INTO agent_messages(message_id,correlation_id,from_role,to_role,message_type,created_at,payload_json) VALUES(?,?,?,?,?,?,?)").bind(uuid(),task.correlationId,'institutional:supervisor','paper-strategy-workflow','supervisor.decision',Date.now(),JSON.stringify(decision)).run();
+     }
+    }else throw new Error('Unsupported or malformed runtime task');
     processed++;
   }catch(error){
     const attempts=(task.attempts??0)+1,message=String(error);
