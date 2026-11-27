@@ -3,9 +3,6 @@ main = "backend/worker.ts"
 compatibility_date = "2026-11-27"
 workers_dev = true
 
-[vars]
-LIVE_TRADING_ENABLED = "false"
-
 [[d1_databases]]
 binding = "DB"
 database_name = "jp-bots-6"
