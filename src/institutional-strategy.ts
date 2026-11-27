@@ -17,7 +17,7 @@ export function buildInstitutionalTradePlan(tf:Timeframes,equity:number,config:S
  if(!finite(equity)||equity<=0)reasons.push('Paper equity is unavailable');
  if([config.riskPct,config.feeBps,config.slippageBps,config.spreadBps,config.impactBps,config.minRewardRisk,config.atrPeriod,config.swingLookback,config.maxEntryDistanceAtr].some(x=>!finite(x))||config.riskPct<=0||config.riskPct>.25||config.feeBps<0||config.slippageBps<0||config.spreadBps<0||config.impactBps<0||config.minRewardRisk<1.2)reasons.push('Strategy cost or risk configuration violates policy');
  const last=base.at(-1);if(!last)return emptyPlan(reasons);
- if(now<last.closeTime||now-last.closeTime>120_000)reasons.push('5-minute market data is stale');
+ if(now<last.closeTime||now-last.closeTime>360_000)reasons.push('5-minute market data is stale');
  const align:Record<string,string>={'5m':trendAt(base,last.closeTime),'15m':trendAt(tf['15m'],last.closeTime),'1h':trendAt(tf['1h'],last.closeTime),'4h':trendAt(tf['4h'],last.closeTime)};
  const longVotes=Object.values(align).filter(x=>x==='bullish').length,shortVotes=Object.values(align).filter(x=>x==='bearish').length;
  const side:'long'|'short'|'none'=longVotes>=3&&align['1h']==='bullish'&&align['4h']==='bullish'?'long':shortVotes>=3&&align['1h']==='bearish'&&align['4h']==='bearish'?'short':'none';
