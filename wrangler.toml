@@ -2,11 +2,12 @@ name = "jp-bots-6-backend"
 main = "backend/worker.ts"
 compatibility_date = "2026-11-27"
 workers_dev = true
+account_id = "08c532bd849cab6fbecdffbdf1718aa9"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "jp-bots-6"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_name = "jpbots-6_db"
+database_id = "cb74859a-b5a2-4347-9249-2de75b4369df"
 migrations_dir = "migrations"
 
 [[durable_objects.bindings]]
@@ -22,6 +23,7 @@ crons = ["* * * * *"]
 
 [vars]
 AI_ENABLED = "false"
+AUTO_PAPER_ENABLED = "false"
 AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 
 [ai]

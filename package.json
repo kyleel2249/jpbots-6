@@ -11,8 +11,8 @@
     "typecheck:worker": "tsc --noEmit -p backend/tsconfig.json",
     "dev:backend": "wrangler dev --local --port 8787",
     "deploy:backend": "wrangler deploy",
-    "db:local": "wrangler d1 migrations apply jp-bots-6 --local",
-    "db:remote": "wrangler d1 migrations apply jp-bots-6 --remote"
+    "db:local": "wrangler d1 migrations apply jpbots-6_db --local",
+    "db:remote": "wrangler d1 migrations apply jpbots-6_db --remote"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.4",
