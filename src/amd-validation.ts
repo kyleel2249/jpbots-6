@@ -71,13 +71,13 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
   const sessionRegime=regime(session);const bucket=regimes.get(sessionRegime)||{sessions:0,trades:[]};bucket.sessions++;regimes.set(sessionRegime,bucket);
   let entered=false;
   for(let i=0;i<dist.length-1&&!entered;i++){
-   const signal=dist[i],history=candles.filter(c=>c.closeTime<=signal.closeTime);
+   const signal=dist[i],signalIndex=session.indexOf(signal),history=session.slice(0,signalIndex+1);
    const assessment=analyseAmdSession(history,signal.closeTime,config.timezone,{sweepSensitivityBps:config.sweepSensitivityBps,minArrayStrength:config.minArrayStrength});
    if(!assessment.qualified){rejectedSignals++;continue;}
    qualifiedSignals++;
    const next=dist[i+1],side=assessment.direction==='bullish'?'long':assessment.direction==='bearish'?'short':null;
    if(!side)continue;
-   const entry=next.open,vol=atr(session,session.indexOf(signal)),buffer=Math.max(vol*.15,entry*config.sweepSensitivityBps/10000);
+   const entry=next.open,vol=atr(session,signalIndex),buffer=Math.max(vol*.15,entry*config.sweepSensitivityBps/10000);
    const structural=side==='long'?assessment.manipulationRange.low:assessment.manipulationRange.high;
    if(!(entry>0&&vol>0&&structural!==null)){rejectedSignals++;continue;}
    const stop=side==='long'?Math.min(structural-buffer,entry-vol*.5):Math.max(structural+buffer,entry+vol*.5);
