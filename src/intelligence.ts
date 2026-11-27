@@ -49,6 +49,6 @@ export function evaluateIntegratedOpportunity(input:{market:Snapshot;book:OrderB
  const marketFresh=input.now-input.market.timestamp<=input.maxAgeMs&&input.now-input.book.timestamp<=input.maxAgeMs&&input.now>=input.market.timestamp&&input.now>=input.book.timestamp;
  const orderFlowStance:Evidence['stance']=depth.obi>.08&&depth.tbi>.08?'bullish':depth.obi<-.08&&depth.tbi<-.08?'bearish':'neutral';
  const orderEvidence:Evidence={agent:'Order Book & Executed Flow Intelligence',stance:orderFlowStance,confidence:Math.min(99,Math.round(Math.max(Math.abs(depth.obi),Math.abs(depth.tbi))*100)),reason:'OBI '+depth.obi.toFixed(3)+'; trade imbalance '+depth.tbi.toFixed(3)+'; spread '+(depth.spreadBps===null?'unknown':depth.spreadBps.toFixed(2)+' bps')};
- const decision=authorizeTrade({evidence:[...input.evidence,orderEvidence],checks:{dataFresh:marketFresh&&market.tradeable,signalValid:input.signalValid,economicsValid:input.economicsValid,exchangeHealthy:input.exchangeHealthy},capital:{...input.capital,dataFresh:input.capital.dataFresh&&marketFresh},scalping:input.scalping});
+ const decision=authorizeTrade({evidence:[...input.evidence,orderEvidence],checks:{dataFresh:marketFresh&&market.tradeable,signalValid:input.signalValid,economicsValid:input.economicsValid,exchangeHealthy:input.exchangeHealthy},capital:{...input.capital,dataFresh:input.capital.dataFresh&&marketFresh},proposedRiskPct:input.proposedRiskPct,scalping:input.scalping});
  return {market,orderBook:depth,decision,tradeable:decision.approved,mode:'paper' as const};
 }
