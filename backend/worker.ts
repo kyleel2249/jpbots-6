@@ -83,7 +83,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase(),bundle=await marketBundle(env,symbol);
   const depth=analyseOrderBook(bundle.book);
   await env.DB.prepare('INSERT INTO orderbook_snapshots(id,symbol,source,observed_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),symbol,'Binance Spot REST',Date.now(),JSON.stringify(depth)).run();
-  return json({symbol,source:'Binance Spot REST',observedAt:Date.now(),...depth});
+  return json({source:'Binance Spot REST',observedAt:Date.now(),...depth});
  }
  if(path==='/api/solana/pairs'&&request.method==='GET'){
   const token=url.searchParams.get('token')||'';
