@@ -5,7 +5,7 @@ type WorkerBinding={fetch(request:Request):Promise<Response>};
 type PagesEnv={API_WORKER?:WorkerBinding;OPERATOR_API_TOKEN?:string;BACKEND_WORKER_URL?:string};
 type PagesContext={request:Request;env:PagesEnv};
 const DEFAULT_BACKEND_URL='https://jp-bots-6-backend.cintexatechnologies.workers.dev';
-const protectedPath=(pathname:string)=>pathname.startsWith('/api/amd/')||pathname==='/api/intelligence/advanced'||pathname==='/api/intelligence/predictive'||pathname==='/api/intelligence/replay'||pathname==='/api/intelligence/recovery'||pathname==='/api/intelligence/liquidations/ingest'||pathname==='/api/institutional/strategy/run'||pathname==='/api/agents/analyse'||pathname==='/api/operator/status'||pathname==='/api/global-market/scan'||pathname==='/api/adaptive-trading/evaluate'||pathname==='/api/adaptive-trading/run';
+const protectedPath=(pathname:string)=>pathname.startsWith('/api/amd/')||pathname==='/api/intelligence/advanced'||pathname==='/api/intelligence/predictive'||pathname==='/api/intelligence/replay'||pathname==='/api/intelligence/recovery'||pathname==='/api/intelligence/liquidations/ingest'||pathname==='/api/institutional/strategy/run'||pathname==='/api/agents/analyse'||pathname==='/api/agents/control'||pathname==='/api/operator/status'||pathname==='/api/global-market/scan'||pathname==='/api/adaptive-trading/evaluate'||pathname==='/api/adaptive-trading/run';
 export const onRequest=async(context:PagesContext):Promise<Response>=>{
  const {request,env}=context,target=new URL(request.url);
  if(target.pathname==='/api/health')target.pathname='/health';
