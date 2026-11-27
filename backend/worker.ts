@@ -304,6 +304,7 @@ export class AgentOrchestrator {
     await this.env.DB.prepare('DELETE FROM agent_task_leases WHERE task_id=?').bind(task.id).run();
     processed++;
   }catch(error){
+    await this.env.DB.prepare('DELETE FROM agent_task_leases WHERE task_id=?').bind(task.id).run();
     const attempts=(task.attempts??0)+1,message=String(error);
     await this.state.storage.put('lastError',message);
     if(attempts<3){queue.push({...task,attempts});nextDelay=Math.max(nextDelay,1000*2**attempts);await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,task.roleId??'market:Market Data Intelligence',task.kind, 'retrying',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();}
