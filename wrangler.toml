@@ -21,10 +21,11 @@ new_sqlite_classes = ["AgentOrchestrator"]
 
 [vars]
 AI_ENABLED = "true"
-AUTO_PAPER_ENABLED = "true"
+AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
+ALPACA_ENDPOINT = "https://paper-api.alpaca.markets/v2"
 AMD_PAPER_FORWARD_ENABLED = "false"
 AMD_SESSION_TIMEZONE = "UTC"
-AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
+AUTO_PAPER_ENABLED = "true"
 
 [[kv_namespaces]]
 binding = "KV_BINDING"
