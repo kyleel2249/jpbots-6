@@ -1,8 +1,9 @@
 import {describe,it,expect} from 'vitest';
-import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport} from './shared-services';
+import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
- it('calculates imbalance, microprice and depth bands',()=>{const r=analyseOrderBook(book);expect(r.obi).toBeCloseTo(.25);expect(r.microprice).not.toBeNull();expect(r.bands).toHaveLength(5);expect(r.tbi).toBe(1);});
+ it('calculates imbalance, microprice and depth bands',()=>{const r=analyseOrderBook(book);expect(r.obi).toBeCloseTo(.2);expect(r.microprice).not.toBeNull();expect(r.bands).toHaveLength(5);expect(r.tbi).toBe(1);});
+ it('computes event-based order-flow imbalance',()=>expect(calculateOrderFlowImbalance([{side:'bid',kind:'add',quantity:10,timestamp:1},{side:'ask',kind:'execute',quantity:5,timestamp:2}]).ofi).toBe(1));
  it('simulates depth consumption and partial fills',()=>{const r=simulateBookSweep(book.asks,'buy',3,10);expect(r.valid).toBe(true);expect(r.filled).toBe(3);expect(r.fees).toBeGreaterThan(0);});
 });
 describe('capital authority and arbitration',()=>{
@@ -14,5 +15,6 @@ describe('testing, memory and recovery',()=>{
  it('never promotes without all stages and explicit approval',()=>expect(deploymentQualification({unitTests:true,backtestTrades:200,backtestNetExpectancy:1,oosTrades:100,oosNetExpectancy:.5,walkForward:true,stress:true,paperTrades:200,paperNetExpectancy:.2,paperMaxDrawdownPct:2,stable:true,liveTestEvidence:false,explicitApproval:true}).eligible).toBe(false));
  it('requires complete trade memory fields',()=>expect(validateTradeMemory({id:'1',timestamp:1,exchange:'Bitget',market:'spot',symbol:'BTCUSDT',strategy:'trend',agent:'test',regime:'bull',signal:'long',confidence:80,entry:100,stop:95,target:110,quantity:1,leverage:1,entryTime:1,fees:1,funding:0,slippage:0,strategyVersion:'v1'}).valid).toBe(true));
  it('blocks restart until reconciled and approved',()=>expect(canResumeTrading({accountReconciled:false,marketDataFresh:true,exchangeHealthy:true,incidentAcknowledged:true,operatorApproved:true}).canResume).toBe(false));
+ it('classifies underperforming systems conservatively',()=>expect(classifyPerformance({netPnl:20,grossProfit:30,grossLoss:10,maxDrawdownPct:20,trades:200,expectancy:.1,executionSlippageBps:2,signalCalibrationError:.1,regimeStable:true,dataReliable:true}).status).toBe('probation-or-restricted'));
  it('keeps Bitget market categories explicit but adapters disabled',()=>expect(exchangeMarketSupport.liveExecutionEnabled).toBe(false));
 });
