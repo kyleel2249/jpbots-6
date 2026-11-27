@@ -30,8 +30,9 @@ export function arbitrateTradeEvidence(evidence:Evidence[],checks:{dataFresh:boo
  const blockers:string[]=[];if(!checks.dataFresh)blockers.push('stale or unverified market data');if(!checks.signalValid)blockers.push('signal validation incomplete');if(!checks.economicsValid)blockers.push('net reward/risk economics unacceptable');if(!checks.exchangeHealthy)blockers.push('exchange or connectivity unhealthy');
  const hard=evidence.filter(x=>x.hardBlock||x.stance==='risk'||x.stance==='incomplete');if(hard.length)blockers.push(...hard.map(x=>x.agent+': '+x.reason));if(!checks.riskApproved)blockers.push('capital protection veto');
  const usable=evidence.filter(x=>x.stance==='bullish'||x.stance==='bearish'),bull=usable.filter(x=>x.stance==='bullish').reduce((a,x)=>a+x.confidence,0),bear=usable.filter(x=>x.stance==='bearish').reduce((a,x)=>a+x.confidence,0);
+ const disagreement=bull>0&&bear>0;if(disagreement&&Math.abs(bull-bear)/(bull+bear)<.35)blockers.push('material agent disagreement requires additional evidence');
  const direction=bull>bear?'long':bear>bull?'short':'none';
- return {decision:blockers.length?'reject':direction==='none'?'wait':'eligible-for-risk-authorisation',direction,blockers,evidenceCount:evidence.length,disagreement:bull>0&&bear>0,weightedBullish:bull,weightedBearish:bear,authority:'capital-protection'};
+ return {decision:blockers.length?'reject':direction==='none'?'wait':'eligible-for-risk-authorisation',direction,blockers,evidenceCount:evidence.length,disagreement,weightedBullish:bull,weightedBearish:bear,authority:'capital-protection'};
 }
 export type CapitalState={equity:number;peakEquity:number;dailyLossPct:number;weeklyLossPct:number;monthlyLossPct:number;openPositions:number;correlatedExposurePct:number;leverage:number;marginUtilisationPct:number;exchangeHealthy:boolean;dataFresh:boolean;accountReconciled:boolean};
 export type CapitalPolicy={dailyLossPct:number;weeklyLossPct:number;monthlyLossPct:number;maxDrawdownPct:number;maxPositions:number;maxCorrelatedExposurePct:number;maxLeverage:number;maxMarginUtilisationPct:number;maxRiskPerTradePct:number};
