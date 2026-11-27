@@ -29,7 +29,7 @@ describe('testing, memory and recovery',()=>{
 });
 
 describe('integrated department and bot registry',()=>{
- it('registers all specialist departments and generated agents',()=>{expect(departments).toHaveLength(13);expect(allAgentRoles).toHaveLength(174);expect(departments.find(d=>d.id==='institutional')?.agents).toHaveLength(12);expect(platformServices).toHaveLength(5);});
+ it('registers all specialist departments and generated agents',()=>{expect(departments).toHaveLength(13);expect(allAgentRoles).toHaveLength(186);expect(allAgentRoles.map(r=>r.name)).toContain('Global Market Discovery Agent');expect(allAgentRoles.map(r=>r.name)).toContain('On-Chain Network Intelligence Agent');expect(departments.find(d=>d.id==='institutional')?.agents).toHaveLength(12);expect(platformServices).toHaveLength(5);});
  it('registers scalping, day and advanced bot families',()=>{expect(botDepartmentCoverage.scalping).toBe(10);expect(botDepartmentCoverage.dayTrading).toBe(10);expect(botCatalog.length).toBe(40);});
  it('rejects bot starts with non-finite risk budgets',()=>{const bot=botCatalog[0];const r=validateBotStart(bot,{mode:'paper',market:'spot',timeframe:'1m',configuredRiskPct:Number.NaN,testsPassed:true,capitalApproved:true,marketDataFresh:true,exchangeHealthy:true});expect(r.allowed).toBe(false);expect(r.reasons).toContain('risk budget outside bot policy');});
  it('keeps every bot paper-only and fails closed on live requests',()=>{const bot=botCatalog[0];const r=validateBotStart(bot,{mode:'restricted-live',market:'spot',timeframe:'1m',configuredRiskPct:.1,testsPassed:true,capitalApproved:true,marketDataFresh:true,exchangeHealthy:true});expect(r.allowed).toBe(false);expect(r.liveEnabled).toBe(false);});
