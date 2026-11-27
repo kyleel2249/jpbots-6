@@ -22,7 +22,7 @@ new_sqlite_classes = ["AgentOrchestrator"]
 crons = ["* * * * *"]
 
 [vars]
-AI_ENABLED = "false"
+AI_ENABLED = "true"
 AUTO_PAPER_ENABLED = "true"
 AMD_PAPER_FORWARD_ENABLED = "false"
 AMD_SESSION_TIMEZONE = "UTC"
