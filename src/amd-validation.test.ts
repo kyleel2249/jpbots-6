@@ -38,6 +38,6 @@ describe('AMD validation suite',()=>{
   const rejected=arbitrateAmdOpportunity({amd:assessment,strategy:{valid:true,side:'short',confidence:90}});
   expect(rejected.approved).toBe(false);
   const record=buildAmdForwardRecord({symbol:'BTCUSDT',assessment,observedAt:candles.at(-1)!.closeTime,paperEnabled:false});
-  expect(['rejected','missed']).toContain(record.status);expect(record.paperOrderAttempted).toBe(false);
+  expect(assessment.qualified).toBe(true);expect(record.status).toBe('missed');expect(record.paperOrderAttempted).toBe(false);
  });
 });
