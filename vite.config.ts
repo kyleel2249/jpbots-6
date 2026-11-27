@@ -7,7 +7,6 @@ export default defineConfig({
     '/health':{target:'http://127.0.0.1:8787',changeOrigin:true}
   }},
   build:{rollupOptions:{output:{manualChunks:{
-    'react-vendor':['react','react-dom'],
     'chart-vendor':['recharts'],
     'icon-vendor':['lucide-react']
   }}}}

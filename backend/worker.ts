@@ -1,4 +1,5 @@
 import { allAgentRoles, departments, platformServices } from '../src/departments';
+import { buildScheduledScannerTasks, SCANNER_TASKS_PER_ALARM } from '../src/scanner-scheduler';
 import { buildMarketReport, evaluateIntegratedOpportunity, monteCarloRisk } from '../src/intelligence';
 import { runEmaBacktest } from '../src/backtesting';
 import type { Snapshot } from '../src/intelligence';
@@ -494,6 +495,16 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({mode:'observation-only',liveTradingEnabled:false,scans:scans.map((s,i)=>s.status==='fulfilled'?s.value:{symbol:symbols[i],error:String(s.reason)})});
  }
  if(path==='/api/orchestrator/status'&&request.method==='GET'){const id=env.ORCHESTRATOR.idFromName('global');return env.ORCHESTRATOR.get(id).fetch('https://orchestrator/status');}
+ if(path==='/api/scanner/status'&&request.method==='GET'){
+  const id=env.ORCHESTRATOR.idFromName('global'),response=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/status');
+  if(!response.ok)return json({ok:false,state:'OFFLINE',error:'Durable Object status returned HTTP '+response.status},502);
+  const scheduler=await response.json() as any;
+  const taskRows=await env.DB.prepare("SELECT status,COUNT(*) AS count FROM agent_tasks WHERE updated_at>=? GROUP BY status").bind(Date.now()-24*60*60*1000).all<any>();
+  const taskCounts=Object.fromEntries(taskRows.results.map((row:any)=>[String(row.status),Number(row.count)]));
+  const ageMs=scheduler.lastProcessedAt===null?null:Math.max(0,Date.now()-Number(scheduler.lastProcessedAt));
+  const state=!scheduler.schedulerStarted?'BOOTSTRAPPING':ageMs===null?'WAITING FOR FIRST TASK':ageMs<180000?'ACTIVE':scheduler.queued>0?'DRAINING BACKLOG':'IDLE';
+  return json({ok:true,state,backend:'connected',scheduler:{...scheduler,lastProcessedAgeMs:ageMs,taskCounts,taskCapacity:500,tasksPerAlarm:SCANNER_TASKS_PER_ALARM},liveTradingEnabled:false,checkedAt:Date.now()});
+ }
  if(path==='/api/audit'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT id,event_type,actor,created_at,payload_json FROM audit_events ORDER BY created_at DESC LIMIT 100').all();return json({events:rows.results});}
  return json({error:'Not found',path},404);
 }
@@ -512,8 +523,8 @@ export class AgentOrchestrator {
  async alarm():Promise<void>{
   const now=Date.now(),minuteKey=new Date(now).toISOString().slice(0,16),lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute');
   let queue=await this.state.storage.get<Task[]>('queue')??[];
-  if(minuteKey!==lastScheduledMinute){const symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=now,fiveMinuteTick=new Date(now).getUTCMinutes()%5===0,tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(fiveMinuteTick){tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'amd-forward-scan' as const,symbol,createdAt})));if(this.env.AUTO_PAPER_ENABLED==='true')tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));}const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
-  const batch=queue.splice(0,3);let processed=0,nextDelay=1000;
+  if(minuteKey!==lastScheduledMinute){const tasks=buildScheduledScannerTasks(now,this.env.AUTO_PAPER_ENABLED==='true',uuid);const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
+  const batch=queue.splice(0,SCANNER_TASKS_PER_ALARM);let processed=0,nextDelay=1000;
   for(const task of batch){try{
     await this.env.DB.batch([
      this.env.DB.prepare("INSERT OR REPLACE INTO agent_task_leases(task_id,owner,lease_until,heartbeat_at,attempts) VALUES(?,?,?,?,?)").bind(task.id,this.state.id.toString(),Date.now()+30_000,Date.now(),task.attempts??0),
