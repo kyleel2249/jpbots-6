@@ -19,7 +19,7 @@ interface DurableStorage { get<T=any>(key:string):Promise<T|undefined>; put(key:
 interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
-type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>};
+type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>;get(key:string):Promise<string|null>;delete(key:string):Promise<void>};
 interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
@@ -205,6 +205,18 @@ async function runMarketScan(env:Env,symbol:string){
 async function route(request:Request,env:Env):Promise<Response>{
  const url=new URL(request.url),path=url.pathname;
  if(request.method==='OPTIONS')return new Response(null,{status:204});
+ if(path.startsWith('/api/amd/')&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+ if(path==='/api/institutional/strategy/run'&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+ if(path==='/api/operator/status'&&request.method==='GET'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const checks:{database:string;kv:string;orchestrator:string}={database:'unavailable',kv:'unavailable',orchestrator:'unavailable'};
+  try{const row=await env.DB.prepare('SELECT 1 AS ok').first<any>();checks.database=row?.ok===1?'connected':'failed';}catch{checks.database='failed';}
+  const probe='health:operator:'+uuid();
+  try{await env.KV_BINDING.put(probe,'ok',{expirationTtl:60});const value=await env.KV_BINDING.get(probe);checks.kv=value==='ok'?'connected':'failed';await env.KV_BINDING.delete(probe);}catch{checks.kv='failed';}
+  try{const id=env.ORCHESTRATOR.idFromName('global'),response=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/status');checks.orchestrator=response.ok?'connected':'failed';}catch{checks.orchestrator='failed';}
+  const ok=Object.values(checks).every(x=>x==='connected');
+  return json({ok,authenticated:true,operatorSecretConfigured:!!env.OPERATOR_API_TOKEN,service:'jpbots-6-backend',checks,liveTradingEnabled:false,checkedAt:Date.now()},ok?200:503);
+ }
  if(path==='/health'){const db=await env.DB.prepare('SELECT 1 AS ok').first<any>();const id=env.ORCHESTRATOR.idFromName('global');const orch=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/status');return json({ok:db?.ok===1,service:'jpbots-6-backend',database:'connected',orchestrator:await orch.json(),liveTradingEnabled:false,now:Date.now()});}
  if(path==='/api/registry'&&request.method==='GET')return json({departments:departments.map(d=>({id:d.id,name:d.name,mandate:d.mandate,roles:d.agents.length,capabilities:d.capabilities,bots:d.bots??[]})),registeredRoleCount:allAgentRoles.length,roles:allAgentRoles.map(r=>({id:r.departmentId+':'+r.name,name:r.name,task:r.task,department:r.department})),platformServices,departmentRuntime:departments.map(d=>({departmentId:d.id,status:d.id==='market'?'scheduled-market-scanner':d.id==='risk'?'shared-final-capital-veto':d.id==='signals'?'shared-evidence-arbitration':d.id==='strategy'?'shared-regime-selector':d.id==='jb2'?'shared-analytics-primitives':d.id==='validation'?'on-demand-EMA-backtest':d.id==='institutional'?'persistent-institutional-role-runtime':'registered-no-independent-worker-handler',independentWorkersRunning:false})),rolesAreDefinitions:true,independentWorkersRunning:false});
  if(path==='/api/agents'&&request.method==='GET'){
