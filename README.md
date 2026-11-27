@@ -27,7 +27,31 @@ Five cross-cutting capabilities are catalogued as shared platform service domain
 
 The catalogue includes 10 scalping bots, 10 day-trading bots and 20 advanced strategy bot definitions (40 total). Registered agents and bot definitions are not the same as running autonomous workers.
 
-## AMD session strategy\n\nThe AMD strategy is an additional session-gated institutional setup, not a replacement for other strategies. Its source image specifies 03:00–06:00 accumulation (strict no-entry), 06:00–09:00 manipulation (strict no-entry), and 09:00–12:00 distribution (only entry window). During distribution it requires CISD or MSS confirmation plus either a sweep of the manipulation high/low or a retest of a strong Premium/Discount array formed during manipulation. The engine exposes session ranges, sweep flags, CISD/MSS state, qualified PD Arrays and candidate entry zones. `AMD_SESSION_TIMEZONE` defaults to `UTC` in `wrangler.toml` because the source image does not specify a timezone; configure it to the intended market-session timezone before enabling paper entries. Outside the distribution window, or without the full confirmation chain, the AMD gate blocks paper entries.\n\n## Implemented backend foundation
+## AMD session strategy\n\nThe AMD strategy is an additional session-gated institutional setup, not a replacement for other strategies. Its source image specifies 03:00–06:00 accumulation (strict no-entry), 06:00–09:00 manipulation (strict no-entry), and 09:00–12:00 distribution (only entry window). During distribution it requires CISD or MSS confirmation plus either a sweep of the manipulation high/low or a retest of a strong Premium/Discount array formed during manipulation. The engine exposes session ranges, sweep flags, CISD/MSS state, qualified PD Arrays and candidate entry zones. `AMD_SESSION_TIMEZONE` defaults to `UTC` in `wrangler.toml` because the source image does not specify a timezone; configure it to the intended market-session timezone before enabling paper entries. Outside the distribution window, or without the full confirmation chain, the AMD gate blocks paper entries.\n\n## AMD historical validation and forward observation
+
+The AMD validation suite reconstructs complete local-time sessions from closed Binance Spot 5-minute candles. It does not use the current session phase to relabel historical candles. Entries are evaluated candle-by-candle: a qualified signal can only enter on the next candle, and stop/target collisions resolve stop-first. The replay applies configurable round-trip fees and slippage, fixed fractional equity risk sizing, session-end exits and a maximum holding horizon.
+
+The replay reports win rate, net expectancy in R, profit factor, realised-equity maximum drawdown, average R, MFE/MAE in price and R units, trade duration, long/short counts, and bullish/bearish/ranging session breakdown. Profit factor is null when there are wins but no losing trades (mathematically unbounded), rather than serialising Infinity.
+
+Parameter optimisation compares timezone, sweep sensitivity (basis points), and minimum PD Array strength. Candidate selection uses chronological complete-local-session splits; the holdout segment is not used to rank candidates. Robustness requires minimum trade samples, positive train and holdout expectancy, and bounded holdout drawdown. A high in-sample score alone is not a promotion criterion.
+
+Walk-forward validation uses expanding training windows and subsequent unseen session blocks, then reserves a final untouched 20% chronological segment. It reports each fold, the aggregate out-of-sample results, and final untouched holdout separately. Regime breakdowns are descriptive; they are not used to make future-informed entry decisions.
+
+The forward observer runs every five minutes for BTCUSDT, ETHUSDT and SOLUSDT. It writes one deduplicated record per closed 5-minute candle, including forbidden-phase rejections, unqualified distribution attempts, strategy conflicts, and qualified-but-unexecuted missed entries. It does not place orders. Every record stores the assessment, reasons, arbitration outcome and paper-order-attempt flag.
+
+AMD validation POST endpoints require `Authorization: Bearer $OPERATOR_API_TOKEN`:
+- `POST /api/amd/replay` — body: `{"symbol":"BTCUSDT","days":30,"timezone":"Africa/Accra"}`
+- `POST /api/amd/optimise` — compare candidate timezones, `sweepSensitivitiesBps` and `arrayStrengths`
+- `POST /api/amd/walk-forward` — body: `{"symbol":"BTCUSDT","days":30,"folds":3}`
+- `POST /api/amd/forward/run` — run one forward observation immediately
+
+Read-only endpoints:
+- `GET /api/amd/forward?symbol=BTCUSDT&limit=100` — forward opportunity ledger
+- `GET /api/amd/validation/runs?symbol=BTCUSDT` — persisted replay, optimisation and walk-forward runs
+
+Historical requests are capped at 60 days and use paginated closed 5-minute candles. This is public market-data replay, not tick/order-book replay; funding, futures margin, liquidation and exchange queue-position effects are not modelled. Optimisation is research-only and must not automatically replace the configured session parameters. The forward observer is deliberately separate from the automatic paper-order path.
+
+## Implemented backend foundation
 
 - **Cloudflare Worker API** in `backend/worker.ts`, deployed separately from the Vite/Pages dashboard.
 - **Cloudflare D1** migrations for market snapshots, order-book snapshots, scan decisions, agent tasks/state, portfolio account state, trade memory, strategy versions, audit events, backtest runs and paper-execution event records.
