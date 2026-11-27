@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {defaultRisk,estimatePositionSize,isWeekday,validateSignal} from './engine';
 import type {Agent,Signal} from './types';
-const agent:Agent={id:1,name:'Test',division:'Scalping',strategy:'Test strategy',symbol:'BTC/USDT',timeframe:'1m',status:'SCANNING',confidence:90,trades:0,winRate:0,pnl:0,risk:.2};
+const agent:Agent={id:1,roleId:'test:Test',enabled:true,name:'Test',division:'Scalping',strategy:'Test strategy',symbol:'BTC/USDT',timeframe:'1m',status:'SCANNING',confidence:90,trades:0,winRate:0,pnl:0,risk:.2};
 const signal:Signal={id:1,time:'12:00',symbol:'BTC/USDT',side:'LONG',strategy:'Test',confidence:90,agent:'Test',status:'WATCH'};
 describe('risk and sizing controls',()=>{
  it('approves a high-confidence signal within limits',()=>expect(validateSignal(signal,agent,defaultRisk,0,0).approved).toBe(true));
