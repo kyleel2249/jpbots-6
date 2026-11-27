@@ -1,4 +1,4 @@
-export type AgentStatus='SCANNING'|'ANALYSING'|'READY'|'IN_POSITION'|'COOLDOWN'|'PAUSED'|'REGISTERED'|'ASSIGNED'|'AWAITING_MARKET_DATA'|'DEGRADED'|'COMPLETED';
+export type AgentStatus='SCANNING'|'ANALYSING'|'READY'|'IN_POSITION'|'COOLDOWN'|'PAUSED'|'REGISTERED'|'ASSIGNED'|'AWAITING_MARKET_DATA'|'AWAITING_CAPABILITY'|'AWAITING_ASSIGNMENT'|'DEGRADED'|'COMPLETED';
 export type Agent={id:number;roleId:string;name:string;division:string;strategy:string;symbol:string;timeframe:string;status:AgentStatus;enabled:boolean;confidence:number;trades:number;winRate:number;pnl:number;risk:number;lastError?:string|null;assignedAt?:number|null};
 export type Signal={id:number;time:string;symbol:string;side:'LONG'|'SHORT';strategy:string;confidence:number;agent:string;status:'WATCH'|'APPROVED'|'REJECTED'|'PAPER_FILLED'};
 export type Market={symbol:string;price:number;change:number;volume:string;funding:string};
