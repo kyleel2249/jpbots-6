@@ -235,7 +235,7 @@ async function runMarketScan(env:Env,symbol:string){
 async function route(request:Request,env:Env):Promise<Response>{
  const url=new URL(request.url),path=url.pathname;
  if(request.method==='OPTIONS')return new Response(null,{status:204});
- if((path.startsWith('/api/amd/')||path==='/api/intelligence/advanced')&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+ if((path.startsWith('/api/amd/')||path.startsWith('/api/intelligence/'))&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
  if(path==='/api/institutional/strategy/run'&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
  if(path==='/api/intelligence/advanced'&&request.method==='POST'){
   const body=await request.json() as {symbol?:string};
@@ -261,7 +261,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   const firstOi=validDerivatives[0]?.openInterest,lastOi=validDerivatives.at(-1)?.openInterest;
   const oiChange=firstOi&&lastOi!==undefined?(lastOi/firstOi-1)*100:null;
   for(const p of validDerivatives){await env.DB.prepare('INSERT OR IGNORE INTO derivatives_history(symbol,observed_at,funding_rate,open_interest,mark_price,index_price,source) VALUES(?,?,?,?,?,?,?)').bind(symbol,p.observedAt,p.fundingRate,p.openInterest,p.markPrice,p.indexPrice,derivativeHistory.source).run();}
-  const liquidations=analyseLiquidations([],now),returns=bundle.closes.slice(1).map((p:number,i:number)=>(p/bundle.closes[i]-1));
+  const liquidationRows=await env.DB.prepare('SELECT observed_at,side,price,quantity,source FROM liquidation_events WHERE symbol=? AND observed_at>? ORDER BY observed_at DESC LIMIT 5000').bind(symbol,now-86_400_000).all<any>();const liquidations=analyseLiquidations(liquidationRows.results.map(r=>({observedAt:Number(r.observed_at),side:r.side as 'long'|'short',price:Number(r.price),quantity:Number(r.quantity),source:String(r.source)})),now),returns=bundle.closes.slice(1).map((p:number,i:number)=>(p/bundle.closes[i]-1));
   const debate=buildSpecialistDebate({trendPct:(bundle.lastPrice/bundle.closes[0]-1)*100,depthImbalance:quotes.length?((quotes[0].bidDepth-quotes[0].askDepth)/(quotes[0].bidDepth+quotes[0].askDepth||1)):0,tradeDelta:bundle.book.trades?.length?((bundle.book.trades.filter((t:any)=>t.aggressor==='buy').reduce((a:number,t:any)=>a+t.price*t.quantity,0)-bundle.book.trades.filter((t:any)=>t.aggressor==='sell').reduce((a:number,t:any)=>a+t.price*t.quantity,0))/(bundle.book.trades.reduce((a:number,t:any)=>a+t.price*t.quantity,0)||1)):0,fundingRate:validDerivatives.at(-1)?.fundingRate??null,openInterestChangePct:oiChange,liquidations,exchangeHealthy:sync.healthy,spreadBps:bundle.snapshot.spreadBps});
   let portfolioRisk:any=null;try{const riskSymbols=['BTCUSDT','ETHUSDT','SOLUSDT'];const histories=await Promise.all(riskSymbols.map(async asset=>{try{const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+asset+'&interval=1m&limit=120');const closes=rows.map(k=>Number(k[4])).filter((v:number)=>Number.isFinite(v)&&v>0);return [asset,closes.slice(1).map((v:number,i:number)=>v/closes[i]-1)] as const;}catch{return [asset,[]] as const;}}));const aligned=Object.fromEntries(histories.filter(([,series])=>series.length>=20));portfolioRisk=calculatePortfolioRisk(Object.keys(aligned).length?aligned:{[symbol]:returns},.95);}catch(error){portfolioRisk={available:false,reason:String(error)};}
   const genome={id:'baseline-'+symbol,fast:9,slow:21,entryThreshold:.2,stopAtr:1.5,targetR:2,maxSpreadBps:20};
@@ -275,6 +275,17 @@ async function route(request:Request,env:Env):Promise<Response>{
   await env.DB.prepare('INSERT INTO decision_replay_events(run_id,sequence,observed_at,event_kind,payload_json,previous_hash,event_hash) VALUES(?,?,?,?,?,?,?)').bind(runId,event.sequence,event.at,event.kind,JSON.stringify(event.payload),event.previousHash,event.hash).run();
   await audit(env,'predictive-liquidity.completed','predictive-liquidity-engine',{runId,symbol,exchanges:sync.exchanges,exchangeHealthy:sync.healthy,liquidationStatus:liquidations.status,consensus:debate.consensus});
   const paperAccount=await getPaperAccount(env);return json({runId,symbol,observedAt:now,exchangeSync:sync,liquidityMap:liquidity,derivatives:{status:validDerivatives.length?'available':'unavailable',source:derivativeHistory.source,history:validDerivatives,openInterestChangePct:oiChange,limitations:['Historical funding and open-interest observations are available only where the public provider returns them.','Historical liquidation feed is not configured; liquidation events are not fabricated.']},liquidations,debate,adversarial:stress,strategyEvolution:evolution,portfolioRisk,smartExecution:execution,decisionReplay:{eventCount:1,finalHash:event.hash,valid:verifyDecisionReplay([event]).valid},paperAccount:{configured:!!paperAccount,initialEquity:Number(paperAccount?.initial_equity??0),equity:Number(paperAccount?.equity??0),currency:'USD',mode:'paper',automaticPaperTradingEnabled:env.AUTO_PAPER_ENABLED==='true'},liveTradingEnabled:false});
+ }
+ if(path==='/api/intelligence/liquidations/ingest'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>null) as any;if(!body||!Array.isArray(body.events)||body.events.length<1||body.events.length>500)return json({error:'Provide 1 to 500 liquidation events'},400);
+  const symbol=String(body.symbol||'').toUpperCase(),exchange=String(body.exchange||'').slice(0,40),source=String(body.source||'').slice(0,80);
+  if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol)||!exchange||!source)return json({error:'Valid symbol, exchange and source are required'},400);
+  const valid=body.events.filter((e:any)=>e&&Number.isFinite(Number(e.observedAt))&&Number(e.observedAt)>0&&Number(e.observedAt)<=Date.now()+2000&&['long','short'].includes(e.side)&&Number.isFinite(Number(e.price))&&Number(e.price)>0&&Number.isFinite(Number(e.quantity))&&Number(e.quantity)>0);
+  if(valid.length!==body.events.length)return json({error:'One or more liquidation events are malformed or future-dated'},422);
+  await env.DB.batch(valid.map((e:any)=>env.DB.prepare('INSERT OR IGNORE INTO liquidation_events(event_id,symbol,exchange_name,observed_at,side,price,quantity,source,ingested_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(String(e.id||uuid()).slice(0,100),symbol,exchange,Number(e.observedAt),e.side,Number(e.price),Number(e.quantity),'operator-ingested:'+source,Date.now())));
+  await audit(env,'liquidations.ingested','operator-liquidation-feed',{symbol,exchange,source,submitted:valid.length});
+  return json({accepted:valid.length,symbol,source:'operator-ingested:'+source,verifiedByPlatform:false,liveTradingEnabled:false});
  }
  if(path==='/api/intelligence/replay'&&request.method==='GET'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
