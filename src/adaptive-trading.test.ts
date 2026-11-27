@@ -6,6 +6,7 @@ describe('adaptive trading arbitrator',()=>{
  it('stands down on stale data, excessive costs and thin liquidity',()=>{const d=evaluateAdaptiveTrading({...base,dataAgeMs:90000,estimatedRoundTripCostBps:100,liquidityUsd:1});expect(d.mode).toBe('NEITHER');expect(d.standDown).toBe(true);});
  it('blocks opposing division signals rather than opening conflicting trades',()=>{const d=evaluateAdaptiveTrading({...base,direction:'long',scalpingDirection:'long',dayTradingDirection:'short',dayTradingTrendAlignment:-.98,dayTradingOrderBookImbalance:-.95,volatilityPct:1.5,trendAlignment:.98});expect(d.mode).not.toBe('COMBINATION');});
  it('keeps allocations within available capital',()=>{const d=evaluateAdaptiveTrading(base,{totalCapitalUsd:3});expect(d.capital.scalpingUsd+d.capital.dayTradingUsd).toBeLessThanOrEqual(3.000001);});
+ it('stands down when no paper capital is available',()=>{const d=evaluateAdaptiveTrading(base,{totalCapitalUsd:0});expect(d.mode).toBe('NEITHER');expect(d.standDown).toBe(true);expect(d.scalping.vetoes).toContain('No allocated paper capital available');});
  it('rejects malformed evidence',()=>{expect(()=>evaluateAdaptiveTrading({...base,price:NaN})).toThrow(/price/);});
  it('treats 98 percent as aspirational, never guaranteed',()=>{const d=evaluateAdaptiveTrading(base);expect(d.kpi.aspirationalReturnPct).toBe(98);expect(d.kpi.guaranteed).toBe(false);});
 });
