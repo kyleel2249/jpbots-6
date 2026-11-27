@@ -117,7 +117,7 @@ export function optimiseAmdParameters(candles:StrategyCandle[],options:{timezone
  }
  candidates.sort((a,b)=>b.score-a.score);
  const best=candidates[0]??null;
- return {valid:!!best,candidateCount:candidates.length,split:{method:'chronological local-session-date boundary per candidate timezone',holdoutUntouchedDuringSelection:true},best,top:candidates.slice(0,10),warnings:best?.robust?[]:['No candidate passed minimum sample and positive holdout expectancy robustness checks; do not promote a configuration']};
+ return {valid:!!best,candidateCount:candidates.length,invalidTimezones,split:{method:'chronological local-session-date boundary per candidate timezone',holdoutUntouchedDuringSelection:true},best,top:candidates.slice(0,10),warnings:best?.robust?[]:['No candidate passed minimum sample and positive holdout expectancy robustness checks; do not promote a configuration']};
 }
 export function walkForwardAmd(candles:StrategyCandle[],folds=4){
  const n=clamp(Math.floor(folds),2,8),results:{fold:number;trainCandles:number;testCandles:number;selected:AmdValidationConfig|null;train:AmdMetrics|null;test:AmdMetrics|null;passed:boolean}[]=[];
