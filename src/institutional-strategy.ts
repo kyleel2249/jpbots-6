@@ -54,7 +54,7 @@ export function replayInstitutionalStrategy(base:StrategyCandle[],higher:Pick<Ti
   const zones=fvgZones(base.slice(0,i+1)).filter(z=>z.index>=i-60&&z.side===(long?'long':'short')),zone=zones.at(-1);if(!zone)continue;
   const a=atr(base.slice(0,i+1),config.atrPeriod);if(!a)continue;const entry=next.open,stop=long?Math.min(...base.slice(Math.max(0,i-config.swingLookback),i).map(x=>x.low))-a*.2:Math.max(...base.slice(Math.max(0,i-config.swingLookback),i).map(x=>x.high))+a*.2,risk=Math.abs(entry-stop);if(!(risk>0)||Math.abs(entry-zone.mid)>a*config.maxEntryDistanceAtr)continue;
   const target=entry+(long?1:-1)*risk*Math.max(config.minRewardRisk,2),costPerUnit=entry*costs,netRR=(risk*2-costPerUnit)/(risk+costPerUnit);if(netRR<config.minRewardRisk)continue;
-  const qty=Math.min(equity*config.riskPct/100/(risk+costPerUnit),equity/entry);if(!(qty>0))continue;position={side:long?'long':'short',entry,stop,target,entryTime:next.openTime,qty};i++;
+  const qty=Math.min(equity*config.riskPct/100/(risk+costPerUnit),equity/entry);if(!(qty>0))continue;position={side:long?'long':'short',entry,stop,target,entryTime:next.openTime,qty};
  }
  if(position){const last=base.at(-1)!,exit=last.close,move=(position.side==='long'?exit-position.entry:position.entry-exit)*position.qty,fee=(position.entry+exit)*position.qty*costs/2,net=move-fee;equity+=net;trades.push({side:position.side,entry:position.entry,exit,entryTime:position.entryTime,exitTime:last.closeTime,netPnl:net,netPct:net/Math.max(equity-net,1)*100,exitReason:'end-of-replay',costBps:costs*10_000});curve.push(equity);}
  return {valid:true,errors:[],trades,metrics:metrics(trades,initialEquity,curve)};
