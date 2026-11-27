@@ -1,5 +1,6 @@
 import {describe,it,expect} from 'vitest';
-import {analyseAmdSession,type StrategyCandle} from './amd-session-strategy';
+import {analyseAmdSession} from './amd-session-strategy';
+import type {StrategyCandle} from './institutional-strategy';
 const day=Date.UTC(2026,0,5);
 function candle(minute:number,open:number,high:number,low:number,close:number,volume=100):StrategyCandle{return {openTime:day+minute*60_000-300_000,closeTime:day+minute*60_000-1,open,high,low,close,volume};}
 function session(last?:StrategyCandle){const rows:StrategyCandle[]=[];for(let m=185;m<360;m+=5)rows.push(candle(m,100,101,99,100.2));for(let m=365,i=0;m<540;m+=5,i++)rows.push(candle(m,100+(i%3)*.1,102,99,100.1+(i%3)*.1));for(let m=545;m<600;m+=5)rows.push(candle(m,100,101,99.5,100.1));if(last)rows.push(last);return rows;}
