@@ -40,8 +40,8 @@ async function marketBundle(env:Env,symbol:string){
  if(!(mid>0)||bestAsk<=bestBid)throw new Error('Invalid or crossed order book');
  const now=Date.now(),book:OrderBookSnapshot={symbol,timestamp:now,mid,bids:bidLevels,asks:askLevels,trades:trades.map(t=>({price:Number(t.p),quantity:Number(t.q),aggressor:t.m?'sell':'buy',timestamp:t.T}))};
  const last=raw[raw.length-1],spreadBps=(bestAsk-bestBid)/mid*10000;
- const snapshot:Snapshot={symbol,timestamp:Number(last[6]),source:'Binance Spot public REST',timeframe:'1m',prices:closes,volumes:raw.map(k=>Number(k[5])),spreadBps,dataQuality:1};
- return {snapshot,book,closes,ema9:ema(closes,9),ema21:ema(closes,21),rsi14:rsi(closes),lastPrice:closes[closes.length-1],observedAt:now};
+ const snapshot:Snapshot={symbol,timestamp:now,source:'Binance Spot public REST',timeframe:'1m',prices:closes,volumes:raw.map(k=>Number(k[5])),spreadBps,dataQuality:1};
+ return {snapshot,book,closes,ema9:ema(closes,9),ema21:ema(closes,21),rsi14:rsi(closes),lastPrice:closes[closes.length-1],candleCloseTime:Number(last[6]),observedAt:now};
 }
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
@@ -53,7 +53,7 @@ async function runMarketScan(env:Env,symbol:string){
  const evidence:Evidence[]=[{agent:'Market Structure & EMA Trend',stance,confidence:Math.round(Math.min(99,Math.abs((bundle.ema9??0)-(bundle.ema21??0))/(bundle.lastPrice||1)*10000)),reason:'EMA9='+bundle.ema9?.toFixed(4)+' EMA21='+bundle.ema21?.toFixed(4)+' RSI14='+bundle.rsi14?.toFixed(2)+'; MTF '+mtfRows.map(x=>x.interval+':'+x.direction).join(', ')}];
  const result=evaluateIntegratedOpportunity({market:bundle.snapshot,book:bundle.book,evidence,capital,signalValid:(bullish||bearish)&&aligned&&report.tradeable,economicsValid:false,exchangeHealthy:true,maxAgeMs:90000,now:bundle.observedAt});
  const id=uuid(),blockers=[...result.decision.arbitration.blockers,...result.decision.risk.reasons,'strategy validation and fee schedule are not configured; live execution is disabled'];
- const decision={id,symbol,observedAt:bundle.observedAt,source:bundle.snapshot.source,price:bundle.lastPrice,ema9:bundle.ema9,ema21:bundle.ema21,rsi14:bundle.rsi14,multiTimeframe:{aligned,directions:mtfRows},report,orderBook:result.orderBook,decision:'observation-only',tradeAuthorized:false,mode:'paper',blockers};
+ const decision={id,symbol,observedAt:bundle.observedAt,source:bundle.snapshot.source,price:bundle.lastPrice,candleCloseTime:bundle.candleCloseTime,ema9:bundle.ema9,ema21:bundle.ema21,rsi14:bundle.rsi14,multiTimeframe:{aligned,directions:mtfRows},report,orderBook:result.orderBook,decision:'observation-only',tradeAuthorized:false,mode:'paper',blockers};
  await env.DB.prepare('INSERT INTO market_snapshots(id,symbol,source,timeframe,observed_at,payload_json) VALUES(?,?,?,?,?,?)').bind(uuid(),symbol,bundle.snapshot.source,'1m',bundle.observedAt,JSON.stringify(bundle.snapshot)).run();
  await env.DB.prepare('INSERT INTO orderbook_snapshots(id,symbol,source,observed_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),symbol,'Binance Spot public REST',bundle.observedAt,JSON.stringify(result.orderBook)).run();
  await env.DB.prepare('INSERT INTO scan_decisions(id,symbol,observed_at,market_regime,direction,decision,blockers_json,report_json) VALUES(?,?,?,?,?,?,?,?)').bind(id,symbol,bundle.observedAt,String(report.regime),String(report.direction),'observation-only',JSON.stringify(blockers),JSON.stringify(decision)).run();
