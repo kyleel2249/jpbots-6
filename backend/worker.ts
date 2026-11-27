@@ -20,7 +20,7 @@ interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>};
-interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
+interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
@@ -160,11 +160,26 @@ async function runAmdForwardScan(env:Env,symbol:string){
  const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},now=Date.now(),assessment=analyseAmdSession(tf['5m'],now,env.AMD_SESSION_TIMEZONE||'UTC');
  const last=tf['5m'].at(-1);if(!last)return {recorded:false,reason:'No closed 5m candle available'};
  const account=await getPaperAccount(env),plan=buildInstitutionalTradePlan(tf,Number(account?.equity??0),defaultInstitutionalStrategyConfig,now);
- const record=buildAmdForwardRecord({symbol,assessment,observedAt:last.closeTime,strategy:{valid:plan.valid,side:plan.side,confidence:plan.confidence},paperEnabled:false});
+ const record=buildAmdForwardRecord({symbol,assessment,observedAt:last.closeTime,strategy:{valid:plan.valid,side:plan.side,confidence:plan.confidence},paperEnabled:env.AMD_PAPER_FORWARD_ENABLED==='true'&&env.AUTO_PAPER_ENABLED==='true'});
+ let paperOrderAttempted=false,paperOpened=false,paperExecution:any=null;
+ const paperEnabled=env.AMD_PAPER_FORWARD_ENABLED==='true'&&env.AUTO_PAPER_ENABLED==='true';
+ if(paperEnabled&&assessment.qualified&&record.arbitration?.approved){
+  if(plan.side!=='long')paperExecution={opened:false,reason:'Current paper engine supports Spot-long only; bearish AMD opportunities remain recorded but are not executed'};
+  else{
+   const existing=await env.DB.prepare("SELECT COUNT(*) AS count FROM amd_forward_opportunities WHERE symbol=? AND session_date=? AND status='paper-opened'").bind(symbol,assessment.sessionDate).first<any>();
+   if(Number(existing?.count??0)>0)paperExecution={opened:false,reason:'One AMD paper entry has already been recorded for this symbol and session'};
+   else{
+    const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
+    if(!nearPlan||!geometry)paperExecution={opened:false,reason:'Live price is not near the independently validated entry or stop/target geometry is invalid'};
+    else{paperOrderAttempted=true;const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:defaultInstitutionalStrategyConfig.riskPct,feeBps:defaultInstitutionalStrategyConfig.feeBps,strategy:'amd-forward-v1'});paperOpened=!!order.position;paperExecution={...order,opened:paperOpened};}
+   }
+  }
+ }
+ const status=paperOpened?'paper-opened':!assessment.qualified||record.arbitration&&!record.arbitration.approved?'rejected':'missed',reasons=[...record.reason,...(paperExecution?.reason?[paperExecution.reason]:[])];
  const dedupeKey=[symbol,assessment.sessionDate,last.closeTime].join(':');
- const result=await env.DB.prepare('INSERT OR IGNORE INTO amd_forward_opportunities(opportunity_id,symbol,session_date,observed_at,phase,status,direction,dedupe_key,reason_json,assessment_json,arbitration_json,paper_order_attempted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(uuid(),symbol,record.sessionDate,record.observedAt,record.phase,record.status,record.direction,dedupeKey,JSON.stringify(record.reason),JSON.stringify({...assessment,strategyPlan:plan}),record.arbitration?JSON.stringify(record.arbitration):null,0,now).run();
- if(Number(result.meta?.changes??0)===1)await audit(env,'amd.forward.opportunity.recorded','amd-forward-observer',{symbol,sessionDate:record.sessionDate,observedAt:record.observedAt,status:record.status,direction:record.direction});
- return {...record,recorded:Number(result.meta?.changes??0)===1,dedupeKey};
+ const result=await env.DB.prepare('INSERT OR IGNORE INTO amd_forward_opportunities(opportunity_id,symbol,session_date,observed_at,phase,status,direction,dedupe_key,reason_json,assessment_json,arbitration_json,paper_order_attempted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(uuid(),symbol,record.sessionDate,record.observedAt,record.phase,status,record.direction,dedupeKey,JSON.stringify(reasons),JSON.stringify({amd:assessment,strategyPlan:plan,paperExecution}),record.arbitration?JSON.stringify(record.arbitration):null,paperOrderAttempted?1:0,now).run();
+ if(Number(result.meta?.changes??0)===1)await audit(env,'amd.forward.opportunity.recorded','amd-forward-observer',{symbol,sessionDate:record.sessionDate,observedAt:record.observedAt,status,direction:record.direction,paperOrderAttempted,paperOpened});
+ return {...record,status,reason:reasons,paperOrderAttempted,paperOpened,paperExecution,recorded:Number(result.meta?.changes??0)===1,dedupeKey};
 }
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
