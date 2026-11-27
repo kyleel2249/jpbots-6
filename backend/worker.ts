@@ -51,7 +51,7 @@ async function runMarketScan(env:Env,symbol:string){
  const stance:Evidence['stance']=bullish?'bullish':bearish?'bearish':'neutral';
  const aligned=mtfRows.every(x=>x.direction===stance)&&stance!=='neutral';
  const evidence:Evidence[]=[{agent:'Market Structure & EMA Trend',stance,confidence:Math.round(Math.min(99,Math.abs((bundle.ema9??0)-(bundle.ema21??0))/(bundle.lastPrice||1)*10000)),reason:'EMA9='+bundle.ema9?.toFixed(4)+' EMA21='+bundle.ema21?.toFixed(4)+' RSI14='+bundle.rsi14?.toFixed(2)+'; MTF '+mtfRows.map(x=>x.interval+':'+x.direction).join(', ')}];
- const result=evaluateIntegratedOpportunity({market:bundle.snapshot,book:bundle.book,evidence,capital,signalValid:false,economicsValid:false,exchangeHealthy:true,maxAgeMs:90000,now:bundle.observedAt});
+ const result=evaluateIntegratedOpportunity({market:bundle.snapshot,book:bundle.book,evidence,capital,signalValid:(bullish||bearish)&&aligned&&report.tradeable,economicsValid:false,exchangeHealthy:true,maxAgeMs:90000,now:bundle.observedAt});
  const id=uuid(),blockers=[...result.decision.arbitration.blockers,...result.decision.risk.reasons,'strategy validation and fee schedule are not configured; live execution is disabled'];
  const decision={id,symbol,observedAt:bundle.observedAt,source:bundle.snapshot.source,price:bundle.lastPrice,ema9:bundle.ema9,ema21:bundle.ema21,rsi14:bundle.rsi14,multiTimeframe:{aligned,directions:mtfRows},report,orderBook:result.orderBook,decision:'observation-only',tradeAuthorized:false,mode:'paper',blockers};
  await env.DB.prepare('INSERT INTO market_snapshots(id,symbol,source,timeframe,observed_at,payload_json) VALUES(?,?,?,?,?,?)').bind(uuid(),symbol,bundle.snapshot.source,'1m',bundle.observedAt,JSON.stringify(bundle.snapshot)).run();
