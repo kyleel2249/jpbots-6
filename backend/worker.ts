@@ -14,7 +14,7 @@ interface DurableStorage { get<T=any>(key:string):Promise<T|undefined>; put(key:
 interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
-interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string }
+interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan';symbol:string;createdAt:number;attempts?:number};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
@@ -174,6 +174,7 @@ async function route(request:Request,env:Env):Promise<Response>{
 
  if(path==='/api/ai/status'&&request.method==='GET')return json({provider:'Cloudflare Workers AI',bindingAvailable:!!env.AI,enabled:env.AI_ENABLED==='true',model:env.AI_MODEL||'@cf/google/gemma-4-26b-a4b-it',automaticAnalysis:false,liveTradingEnabled:false,reason:env.AI_ENABLED==='true'?'AI inference is enabled for explicit department analysis requests':'AI inference is disabled by default; enable AI_ENABLED only after reviewing account usage and model costs'});
  if(path==='/api/agents/analyse'&&request.method==='POST'){
+  if(!env.OPERATOR_API_TOKEN||request.headers.get('authorization')!=='Bearer '+env.OPERATOR_API_TOKEN)return json({error:'Operator authentication required'},401);
   if(env.AI_ENABLED!=='true'||!env.AI)return json({error:'AI specialist analysis is not enabled',bindingAvailable:!!env.AI,enablement:'Configure the Workers AI binding and set AI_ENABLED=true after reviewing usage costs',liveTradingEnabled:false},503);
   const body=await request.json().catch(()=>({})) as any,departmentId=String(body.departmentId||'market'),symbol=String(body.symbol||'BTCUSDT').toUpperCase(),department=departments.find(x=>x.id===departmentId);
   if(!department)return json({error:'Unknown departmentId'},404);
