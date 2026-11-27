@@ -203,3 +203,33 @@ Binance public REST provides historical funding and open-interest endpoints, but
 5. Run the Predictive Liquidity assessment and verify both exchanges synchronise before interpreting a consensus.
 
 Do not apply remote migrations or deploy automatically from CI. The repository CI validates the migration locally and performs a Wrangler dry-run; remote database changes and production deployment remain explicit operator actions.
+
+
+## Backend recovery, paper equity and LLM provider configuration
+
+### Why the dashboard can report backend offline
+
+The Pages frontend and `jp-bots-6-backend` are separate deployments. A Pages build does not deploy the Worker. Confirm the Worker named in `wrangler.toml` is deployed in the same Cloudflare account and that the Pages Service Binding is named `API_WORKER` and targets `jp-bots-6-backend`. The Pages secret `OPERATOR_API_TOKEN` must match the Worker secret. The Worker also requires its D1, KV and Durable Object bindings. Check `/api/health` and authenticated `/api/operator/status` after deployment.
+
+### Restore the $5 paper account
+
+The dashboard now reads `GET /api/paper/account` and displays the persisted paper equity rather than a hard-coded live-account placeholder. If the response says `configured:false`, apply the pending D1 migrations to the correct remote database with `npm run db:remote`, then deploy the Worker. Migration 0007 initialises only an untouched starter account; it does not overwrite trading history. A displayed $5.00 balance is simulated USD, not an exchange wallet.
+
+### LLM activation and multiple API keys
+
+`AI_ENABLED=true` enables authenticated specialist analysis. The provider adapter accepts up to five OpenAI-compatible provider key slots in the Worker secret `LLM_API_KEYS`, as a JSON array, for example:
+
+```json
+[
+  {"baseUrl":"https://api.openai.com/v1","apiKey":"YOUR_KEY_1","model":"YOUR_SUPPORTED_MODEL"},
+  {"baseUrl":"https://api.openai.com/v1","apiKey":"YOUR_KEY_2","model":"YOUR_SUPPORTED_MODEL"}
+]
+```
+
+Use actual provider-issued keys and models that your account is entitled to use. The adapter tries configured key slots in order and then falls back to the bound Cloudflare Workers AI model. Store this JSON only as a Cloudflare Worker secret named `LLM_API_KEYS`; never commit it, place it in `VITE_*`, or send it through the browser. Also configure `OPERATOR_API_TOKEN` as a Worker secret and matching Pages secret. Workers AI uses its binding and does not require an API key. The repository cannot create or provision third-party API keys on the user's behalf.
+
+The analysis endpoint remains authenticated and analysis-only. LLM output is validated against registered specialist roles; missing or malformed findings remain incomplete. LLM output cannot authorise live exchange orders.
+
+### Deploy the backend Worker
+
+A manual GitHub Actions workflow `.github/workflows/deploy-backend.yml` is provided. Add a GitHub Actions repository secret `CLOUDFLARE_API_TOKEN` with permission to deploy Workers in this account, then run the workflow from the Actions tab. Apply remote D1 migrations deliberately before deploying code that requires the new schema. This deployment workflow does not silently mutate the remote database.
