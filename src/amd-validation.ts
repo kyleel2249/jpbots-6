@@ -18,14 +18,14 @@ export type AmdReplayTrade={
 };
 export type AmdMetrics={
   trades:number;wins:number;losses:number;winRatePct:number;netPnl:number;returnPct:number;
-  expectancyR:number;profitFactor:number|null;maxDrawdownPct:number;averageR:number;
+  expectancyR:number;profitFactor:number|null;maxDrawdownPct:number;averageR:number;medianR:number;maxConsecutiveWins:number;maxConsecutiveLosses:number;recoveryFactor:number|null;
   averageMfeR:number;averageMaeR:number;averageMfePct:number;averageMaePct:number;
   averageBarsHeld:number;longTrades:number;shortTrades:number;
 };
 export type AmdReplayResult={
   valid:boolean;errors:string[];config:AmdValidationConfig;sourceCandles:number;
   sessions:number;qualifiedSignals:number;rejectedSignals:number;trades:AmdReplayTrade[];
-  metrics:AmdMetrics|null;equityCurve:{time:number;equity:number;drawdownPct:number}[];
+  metrics:AmdMetrics|null;equityCurve:{time:number;equity:number;drawdownPct:number}[];uncertainty:{iterations:number;expectancyR95:[number,number]|null;winRatePct95:[number,number]|null;sampleAdequate:boolean}|null;
   regimeBreakdown:{regime:'bullish'|'bearish'|'ranging';sessions:number;trades:number;winRatePct:number;expectancyR:number;netPnl:number}[];
 };
 const finite=(n:number)=>Number.isFinite(n);
@@ -52,15 +52,15 @@ function metrics(trades:AmdReplayTrade[],initialEquity:number):{metrics:AmdMetri
  for(const t of trades.slice().sort((a,b)=>a.exitTime-b.exitTime)){equity+=t.netPnl;peak=Math.max(peak,equity);const dd=peak>0?(peak-equity)/peak*100:0;maxDD=Math.max(maxDD,dd);curve.push({time:t.exitTime,equity,drawdownPct:dd});}
  const wins=trades.filter(t=>t.netR>0),losses=trades.filter(t=>t.netR<=0),grossWin=wins.reduce((s,t)=>s+t.netPnl,0),grossLoss=Math.abs(losses.reduce((s,t)=>s+t.netPnl,0));
  const net=trades.reduce((s,t)=>s+t.netPnl,0),rs=trades.map(t=>t.netR),mfe=trades.map(t=>t.mfeR),mae=trades.map(t=>t.maeR);
- return {metrics:{trades:trades.length,wins:wins.length,losses:losses.length,winRatePct:trades.length?wins.length/trades.length*100:0,netPnl:net,returnPct:net/initialEquity*100,expectancyR:average(rs),profitFactor:grossLoss>0?grossWin/grossLoss:grossWin>0?null:0,maxDrawdownPct:maxDD,averageR:average(rs),averageMfeR:average(mfe),averageMaeR:average(mae),averageMfePct:average(trades.map(t=>t.entry>0?t.mfe/t.entry*100:0)),averageMaePct:average(trades.map(t=>t.entry>0?t.mae/t.entry*100:0)),averageBarsHeld:average(trades.map(t=>t.barsHeld)),longTrades:trades.filter(t=>t.side==='long').length,shortTrades:trades.filter(t=>t.side==='short').length},equityCurve:curve};
+ let maxWins=0,maxLosses=0,winStreak=0,lossStreak=0;for(const t of trades){if(t.netR>0){winStreak++;lossStreak=0;}else{lossStreak++;winStreak=0;}maxWins=Math.max(maxWins,winStreak);maxLosses=Math.max(maxLosses,lossStreak);}const sortedR=rs.slice().sort((a,b)=>a-b),medianR=sortedR.length?(sortedR.length%2?sortedR[(sortedR.length-1)/2]:(sortedR[sortedR.length/2-1]+sortedR[sortedR.length/2])/2):0;\n return {metrics:{trades:trades.length,wins:wins.length,losses:losses.length,winRatePct:trades.length?wins.length/trades.length*100:0,netPnl:net,returnPct:net/initialEquity*100,expectancyR:average(rs),medianR,maxConsecutiveWins:maxWins,maxConsecutiveLosses:maxLosses,recoveryFactor:maxDD>0?net/(initialEquity*maxDD/100):null,profitFactor:grossLoss>0?grossWin/grossLoss:grossWin>0?null:0,maxDrawdownPct:maxDD,averageR:average(rs),averageMfeR:average(mfe),averageMaeR:average(mae),averageMfePct:average(trades.map(t=>t.entry>0?t.mfe/t.entry*100:0)),averageMaePct:average(trades.map(t=>t.entry>0?t.mae/t.entry*100:0)),averageBarsHeld:average(trades.map(t=>t.barsHeld)),longTrades:trades.filter(t=>t.side==='long').length,shortTrades:trades.filter(t=>t.side==='short').length},equityCurve:curve};
 }
-function regime(candles:StrategyCandle[]):'bullish'|'bearish'|'ranging'{if(candles.length<2)return 'ranging';const first=candles[0].open,last=candles[candles.length-1].close,change=first>0?(last-first)/first:0;return change>.003?'bullish':change<-.003?'bearish':'ranging';}
+function bootstrap(trades:AmdReplayTrade[],iterations=1000){if(trades.length<5)return {iterations,expectancyR95:null as [number,number]|null,winRatePct95:null as [number,number]|null,sampleAdequate:false};let seed=42;const rand=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return (seed>>>0)/4294967296;};const e:number[]=[],w:number[]=[];for(let i=0;i<iterations;i++){let sum=0,wins=0;for(let j=0;j<trades.length;j++){const t=trades[Math.floor(rand()*trades.length)];sum+=t.netR;if(t.netR>0)wins++;}e.push(sum/trades.length);w.push(wins/trades.length*100);}e.sort((a,b)=>a-b);w.sort((a,b)=>a-b);return {iterations,expectancyR95:[e[Math.floor(iterations*.025)],e[Math.floor(iterations*.975)]] as [number,number],winRatePct95:[w[Math.floor(iterations*.025)],w[Math.floor(iterations*.975)]] as [number,number],sampleAdequate:true};}\nexport function amdCostSensitivity(candles:StrategyCandle[],config:Partial<AmdValidationConfig>={},extraBps=[0,5,10]){return extraBps.map(extra=>{const result=replayAmdSessions(candles,{...config,slippageBps:(config.slippageBps??DEFAULT_AMD_VALIDATION_CONFIG.slippageBps)+extra});return {extraSlippageBps:extra,metrics:result.metrics,valid:result.valid};});}\nfunction regime(candles:StrategyCandle[]):'bullish'|'bearish'|'ranging'{if(candles.length<2)return 'ranging';const first=candles[0].open,last=candles[candles.length-1].close,change=first>0?(last-first)/first:0;return change>.003?'bullish':change<-.003?'bearish':'ranging';}
 export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdValidationConfig>={}):AmdReplayResult{
  const config={...DEFAULT_AMD_VALIDATION_CONFIG,...overrides},errors=validateConfig(config);
  if(!input.length)errors.push('No historical candles supplied');
  const candles=input.slice().sort((a,b)=>a.closeTime-b.closeTime);
  for(let i=0;i<candles.length;i++){const c=candles[i];if(![c.openTime,c.closeTime,c.open,c.high,c.low,c.close,c.volume].every(finite)||c.open<=0||c.low<=0||c.high<c.low||c.close<c.low||c.close>c.high||c.volume<0||(i>0&&c.closeTime<=candles[i-1].closeTime)){errors.push('Invalid, out-of-order, or non-monotonic candle at index '+i);break;}}
- if(errors.length)return {valid:false,errors,config,sourceCandles:candles.length,sessions:0,qualifiedSignals:0,rejectedSignals:0,trades:[],metrics:null,equityCurve:[],regimeBreakdown:[]};
+ if(errors.length)return {valid:false,errors,config,sourceCandles:candles.length,sessions:0,qualifiedSignals:0,rejectedSignals:0,trades:[],metrics:null,equityCurve:[],uncertainty:null,regimeBreakdown:[]};
  const groups=new Map<string,StrategyCandle[]>();for(const c of candles){const x=local(c,config.timezone);if(x.minute>=180&&x.minute<720){const a=groups.get(x.date)||[];a.push(c);groups.set(x.date,a);}}
  const trades:AmdReplayTrade[]=[],regimes=new Map<string,{sessions:number;trades:AmdReplayTrade[]}>();let currentEquity=config.initialEquity;
  let qualifiedSignals=0,rejectedSignals=0;
@@ -98,7 +98,7 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
  }
  const summary=metrics(trades,config.initialEquity);
  const regimeBreakdown=[...regimes.entries()].map(([key,v])=>({regime:key as 'bullish'|'bearish'|'ranging',sessions:v.sessions,trades:v.trades.length,winRatePct:v.trades.length?v.trades.filter(t=>t.netR>0).length/v.trades.length*100:0,expectancyR:average(v.trades.map(t=>t.netR)),netPnl:v.trades.reduce((s,t)=>s+t.netPnl,0)}));
- return {valid:true,errors:[],config,sourceCandles:candles.length,sessions:groups.size,qualifiedSignals,rejectedSignals,trades,metrics:summary.metrics,equityCurve:summary.equityCurve,regimeBreakdown};
+ return {valid:true,errors:[],config,sourceCandles:candles.length,sessions:groups.size,qualifiedSignals,rejectedSignals,trades,metrics:summary.metrics,equityCurve:summary.equityCurve,uncertainty:bootstrap(trades),regimeBreakdown};
 }
 function splitByLocalDays(candles:StrategyCandle[],timezone:string,ratio:number){const dates=[...new Set(candles.map(c=>local(c,timezone).date))].sort(),cut=Math.max(1,Math.min(dates.length-1,Math.floor(dates.length*ratio))),trainDates=new Set(dates.slice(0,cut));return {train:candles.filter(c=>trainDates.has(local(c,timezone).date)),test:candles.filter(c=>!trainDates.has(local(c,timezone).date))};}
 export type AmdOptimisationCandidate={config:AmdValidationConfig;train:AmdMetrics;holdout:AmdMetrics;score:number;robust:boolean};
