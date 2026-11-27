@@ -18,7 +18,7 @@ type Task={id:string;kind:'market-scan';symbol:string;createdAt:number};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
-const binance=(env:Env)=> (env.BINANCE_BASE_URL||'https://api.binance.com').replace(/\/$/,'');
+const binance=(env:Env)=> (env.BINANCE_BASE_URL||'https://data-api.binance.vision').replace(/\/$/,'');
 const dexscreener=(env:Env)=>(env.DEXSCREENER_BASE_URL||'https://api.dexscreener.com').replace(/\/$/,'');
 async function getJson<T>(url:string):Promise<T>{const response=await fetch(url,{headers:{accept:'application/json'}});if(!response.ok)throw new Error('Provider returned HTTP '+response.status);return response.json() as Promise<T>;}
 async function audit(env:Env,type:string,actor:string,payload:unknown){await env.DB.prepare('INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),type,actor,Date.now(),JSON.stringify(payload)).run();}
@@ -65,11 +65,18 @@ async function route(request:Request,env:Env):Promise<Response>{
  if(request.method==='OPTIONS')return new Response(null,{status:204});
  if(path==='/health'){const db=await env.DB.prepare('SELECT 1 AS ok').first<any>();const id=env.ORCHESTRATOR.idFromName('global');const orch=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/status');return json({ok:db?.ok===1,service:'jpbots-6-backend',database:'connected',orchestrator:await orch.json(),liveTradingEnabled:false,now:Date.now()});}
  if(path==='/api/registry'&&request.method==='GET')return json({departments:departments.map(d=>({id:d.id,name:d.name,mandate:d.mandate,roles:d.agents.length,capabilities:d.capabilities,bots:d.bots??[]})),registeredRoleCount:allAgentRoles.length,platformServices,rolesAreDefinitions:true,independentWorkersRunning:false});
- if(path==='/api/providers'&&request.method==='GET')return json({marketData:{binanceSpot:{status:'connected-on-request',public:true},solanaDex:{provider:'DexScreener',status:'connected-on-request',public:true}},macroNews:{status:'not-configured',reason:'No licensed provider credentials configured'},traderDiscovery:{status:'not-configured',reason:'No supported source-trader data provider configured'},execution:{bitget:{status:'not-connected',markets:['spot','margin','usdt-m','coin-m','usdc-m']},solanaDex:{status:'read-only'}},liveTradingEnabled:false});
+ if(path==='/api/providers'&&request.method==='GET')return json({marketData:{binanceSpot:{status:'connected-on-request',public:true},bitgetPublic:{status:'connected-on-request',public:true,markets:['spot','margin-reference','usdt-m','coin-m','usdc-m']},solanaDex:{provider:'DexScreener',status:'connected-on-request',public:true},solanaNewPools:{provider:'GeckoTerminal',status:'connected-on-request',public:true}},macroNews:{status:'not-configured',reason:'No licensed provider credentials configured'},traderDiscovery:{status:'not-configured',reason:'No supported source-trader data provider configured'},execution:{bitget:{status:'not-connected',markets:['spot','margin','usdt-m','coin-m','usdc-m']},solanaDex:{status:'read-only'}},liveTradingEnabled:false});
  if(path==='/api/market/tickers'&&request.method==='GET'){
   const symbols=(url.searchParams.get('symbols')||'BTCUSDT,ETHUSDT,SOLUSDT').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9]{5,20}$/.test(x)).slice(0,20);
   const results=await Promise.all(symbols.map(async symbol=>{const x=await getJson<any>(binance(env)+'/api/v3/ticker/24hr?symbol='+symbol);return {symbol,price:Number(x.lastPrice),changePct:Number(x.priceChangePercent),volume:Number(x.quoteVolume),observedAt:Date.now(),source:'Binance Spot REST'};}));
   return json({source:'Binance Spot REST',observedAt:Date.now(),tickers:results});
+ }
+ if(path==='/api/market/bitget/tickers'&&request.method==='GET'){
+  const market=url.searchParams.get('market')||'spot',symbols=(url.searchParams.get('symbols')||'BTCUSDT,ETHUSDT,SOLUSDT').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9]{5,20}$/.test(x)).slice(0,10);
+  const productType:Record<string,string>={'usdt-m':'USDT-FUTURES','coin-m':'COIN-FUTURES','usdc-m':'USDC-FUTURES'};
+  if(!['spot','margin','usdt-m','coin-m','usdc-m'].includes(market))return json({error:'Unsupported Bitget market category'},400);
+  const rows=await Promise.all(symbols.map(async symbol=>{const endpoint=market==='spot'||market==='margin'?'/api/v2/spot/market/tickers?symbol='+symbol:'/api/v2/mix/market/ticker?productType='+productType[market]+'&symbol='+symbol;const payload=await getJson<any>('https://api.bitget.com'+endpoint);if(payload.code!=='00000')throw new Error('Bitget '+symbol+': '+String(payload.msg||payload.code));const x=Array.isArray(payload.data)?payload.data[0]:payload.data;return {symbol,market,price:Number(x?.lastPr||0),change24h:x?.changeUtc24h??x?.change24h??null,baseVolume:Number(x?.baseVolume||0),quoteVolume:Number(x?.quoteVolume||0),bid:Number(x?.bidPr||0),ask:Number(x?.askPr||0),source:'Bitget public REST'};}));
+  return json({market,source:'Bitget public REST',observedAt:Date.now(),tickers:rows});
  }
  if(path==='/api/market/klines'&&request.method==='GET'){
   const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase(),interval=url.searchParams.get('interval')||'1m',limit=Math.min(1000,Math.max(10,Number(url.searchParams.get('limit')||200)));
@@ -84,6 +91,12 @@ async function route(request:Request,env:Env):Promise<Response>{
   const depth=analyseOrderBook(bundle.book);
   await env.DB.prepare('INSERT INTO orderbook_snapshots(id,symbol,source,observed_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),symbol,'Binance Spot REST',Date.now(),JSON.stringify(depth)).run();
   return json({source:'Binance Spot REST',observedAt:Date.now(),...depth});
+ }
+ if(path==='/api/solana/new-pools'&&request.method==='GET'){
+  const limit=Math.min(20,Math.max(1,Number(url.searchParams.get('limit')||10)));
+  const payload=await getJson<any>('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
+  const pools=(payload.data||[]).slice(0,limit).map((p:any)=>({poolId:p.id,attributes:p.attributes,baseTokenId:p.relationships?.base_token?.data?.id,quoteTokenId:p.relationships?.quote_token?.data?.id,source:'GeckoTerminal'}));
+  return json({chain:'solana',source:'GeckoTerminal public API',observedAt:Date.now(),pools});
  }
  if(path==='/api/solana/pairs'&&request.method==='GET'){
   const token=url.searchParams.get('token')||'';
