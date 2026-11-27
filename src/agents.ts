@@ -6,8 +6,8 @@ export const initialAgents:Agent[]=allAgentRoles.map((r,i)=>({
  name:r.name.replace(/ Agent$/,''),
  division:r.department,
  strategy:r.task,
- symbol:r.department.includes('Solana')?'SOL/USDC':'BTC/USDT',
- timeframe:r.department==='Scalping'?'1m':r.department==='Day Trading'?'15m':'1h',
+ symbol:'UNASSIGNED',
+ timeframe:r.department==='Scalping'?'1m/3m/5m':r.department==='Day Trading'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME',
  status:'REGISTERED',
- confidence:0,trades:0,winRate:0,pnl:0,risk:.2
+ confidence:0,trades:0,winRate:0,pnl:0,risk:0
 }));
