@@ -61,12 +61,10 @@ async function loadPredictiveDerivatives(symbol:string):Promise<{points:Derivati
   if(!fundingResponse.ok||!oiResponse.ok||!premiumResponse.ok)return {points:[],source:null};
   const [funding,oi,premium]=await Promise.all([fundingResponse.json() as Promise<any[]>,oiResponse.json() as Promise<any[]>,premiumResponse.json() as Promise<any>]);
   const points:DerivativePoint[]=[];
-  for(const row of oi){const at=Number(row.timestamp),oiValue=Number(row.sumOpenInterest);const fr=funding.filter((x:any)=>Number(x.fundingTime)<=at).at(-1);if(Number.isFinite(at)&&Number.isFinite(oiValue)&&oiValue>=0&&fr){points.push({observedAt:at,fundingRate:Number(fr.fundingRate),openInterest:oiValue,markPrice:Number(premium.markPrice),indexPrice:Number(premium.indexPrice)});}}
-  if(points.length){const latest=points[points.length-1];await envlessNoop(latest);}
+  for(const row of oi){const at=Number(row.timestamp),oiValue=Number(row.sumOpenInterest);const fr=funding.filter((x:any)=>Number(x.fundingTime)<=at).at(-1);if(Number.isFinite(at)&&Number.isFinite(oiValue)&&oiValue>=0&&fr){points.push({observedAt:at,fundingRate:Number(fr.fundingRate),openInterest:oiValue});}}
   return {points,source:'Binance USD-M Futures public fundingRate + openInterestHist'};
  }catch{return {points:[],source:null};}
 }
-async function envlessNoop(_value:unknown):Promise<void>{}
 async function marketBundle(env:Env,symbol:string){
  const root=binance(env);
  const [raw,depth,trades]=await Promise.all([
