@@ -8,6 +8,7 @@ import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 import { runDepartmentCouncil, type WorkersAiBinding } from '../src/agent-runtime';
 import { analyseInstitutionalMarket } from '../src/institutional-intelligence';
 import { analyseAmdSession } from '../src/amd-session-strategy';
+import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwardAmd, buildAmdForwardRecord, type AmdValidationConfig } from '../src/amd-validation';
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 
@@ -19,10 +20,11 @@ interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>};
-interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
+interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+const operatorAuthorized=(request:Request,env:Env)=>!!env.OPERATOR_API_TOKEN&&request.headers.get('authorization')==='Bearer '+env.OPERATOR_API_TOKEN;
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
 const binance=(env:Env)=> (env.BINANCE_BASE_URL||'https://data-api.binance.vision').replace(/\/$/,'');
@@ -139,6 +141,48 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
  await env.KV_BINDING.put('institutional:latest:'+symbol,JSON.stringify({runId,createdAt,qualification,plan,amdSession,summary:result.report}),{expirationTtl:86400});
  await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
  return result;
+}
+async function fetchAmdHistory(env:Env,symbol:string,days:number){
+ const intervalMs=300_000,now=Date.now(),boundedDays=Math.max(1,Math.min(60,Math.floor(days))),start=now-boundedDays*86_400_000,rows:Kline[]=[];let cursor=start;
+ for(let page=0;page<19&&cursor<now;page++){
+  const batch=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval=5m&limit=1000&startTime='+cursor+'&endTime='+now);
+  if(!batch.length)break;rows.push(...batch);const next=Number(batch[batch.length-1][0])+intervalMs;if(next<=cursor)throw new Error('Historical candle pagination did not advance');cursor=next;if(batch.length<1000)break;
+ }
+ const candles=rows.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<now);
+ return candles;
+}
+async function saveAmdValidation(env:Env,symbol:string,runType:'replay'|'optimisation'|'walk-forward',config:unknown,result:unknown,metrics:unknown){
+ const runId=uuid(),now=Date.now();await env.DB.prepare('INSERT INTO amd_validation_runs(run_id,symbol,run_type,strategy_version,started_at,completed_at,config_json,metrics_json,result_json) VALUES(?,?,?,?,?,?,?,?,?)').bind(runId,symbol,runType,'amd-session-v2',now,now,JSON.stringify(config),JSON.stringify(metrics),JSON.stringify(result)).run();await audit(env,'amd.validation.completed','amd-validation-engine',{runId,symbol,runType});return runId;
+}
+async function runAmdForwardScan(env:Env,symbol:string){
+ const intervals=['5m','15m','1h','4h'] as const,limits=[500,300,200,100];
+ const fetched=await Promise.all(intervals.map(async(interval,i)=>{const raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit='+limits[i]);return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<Date.now());}));
+ const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},now=Date.now(),assessment=analyseAmdSession(tf['5m'],now,env.AMD_SESSION_TIMEZONE||'UTC');
+ const last=tf['5m'].at(-1);if(!last)return {recorded:false,reason:'No closed 5m candle available'};
+ const account=await getPaperAccount(env),plan=buildInstitutionalTradePlan(tf,Number(account?.equity??0),defaultInstitutionalStrategyConfig,now);
+ const record=buildAmdForwardRecord({symbol,assessment,observedAt:last.closeTime,strategy:{valid:plan.valid,side:plan.side,confidence:plan.confidence},paperEnabled:env.AMD_PAPER_FORWARD_ENABLED==='true'&&env.AUTO_PAPER_ENABLED==='true'});
+ let paperOrderAttempted=false,paperOpened=false,paperExecution:any=null;
+ const paperEnabled=env.AMD_PAPER_FORWARD_ENABLED==='true'&&env.AUTO_PAPER_ENABLED==='true';
+ if(paperEnabled&&assessment.qualified&&record.arbitration?.approved){
+  if(plan.side!=='long')paperExecution={opened:false,reason:'Current paper engine supports Spot-long only; bearish AMD opportunities remain recorded but are not executed'};
+  else{
+   const lease=await env.DB.prepare("INSERT INTO amd_paper_session_locks(symbol,session_date,state,lease_until,position_id,updated_at) VALUES(?,?,'reserved',?,NULL,?) ON CONFLICT(symbol,session_date) DO UPDATE SET state='reserved',lease_until=excluded.lease_until,position_id=NULL,updated_at=excluded.updated_at WHERE amd_paper_session_locks.state='failed' OR (amd_paper_session_locks.state='reserved' AND amd_paper_session_locks.lease_until<?)").bind(symbol,assessment.sessionDate,now+120000,now,now).run();
+   if(Number(lease.meta?.changes??0)!==1)paperExecution={opened:false,reason:'An AMD paper entry is already open or reserved for this symbol and session'};
+   else{
+    try{
+     const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
+     if(!nearPlan||!geometry)paperExecution={opened:false,reason:'Executable price is not near the independently validated entry or stop/target geometry is invalid'};
+     else{paperOrderAttempted=true;const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:defaultInstitutionalStrategyConfig.riskPct,feeBps:defaultInstitutionalStrategyConfig.feeBps,strategy:'amd-forward-v1'});paperOpened=!!order.position;paperExecution={...order,opened:paperOpened};}
+     await env.DB.prepare("UPDATE amd_paper_session_locks SET state=?,lease_until=?,position_id=?,updated_at=? WHERE symbol=? AND session_date=? AND state='reserved'").bind(paperOpened?'opened':'failed',paperOpened?Number.MAX_SAFE_INTEGER:now,paperOpened?String(paperExecution.position?.positionId??''):null,Date.now(),symbol,assessment.sessionDate).run();
+    }catch(error){await env.DB.prepare("UPDATE amd_paper_session_locks SET state='failed',lease_until=?,updated_at=? WHERE symbol=? AND session_date=? AND state='reserved'").bind(now,Date.now(),symbol,assessment.sessionDate).run();paperExecution={opened:false,reason:'AMD paper execution failed: '+String(error)};}
+   }
+  }
+ }
+ const status=paperOpened?'paper-opened':!assessment.qualified||record.arbitration&&!record.arbitration.approved?'rejected':'missed',reasons=[...record.reason,...(paperExecution?.reason?[paperExecution.reason]:[])];
+ const dedupeKey=[symbol,assessment.sessionDate,last.closeTime].join(':');
+ const result=await env.DB.prepare('INSERT OR IGNORE INTO amd_forward_opportunities(opportunity_id,symbol,session_date,observed_at,phase,status,direction,dedupe_key,reason_json,assessment_json,arbitration_json,paper_order_attempted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(uuid(),symbol,record.sessionDate,record.observedAt,record.phase,status,record.direction,dedupeKey,JSON.stringify(reasons),JSON.stringify({amd:assessment,strategyPlan:plan,paperExecution}),record.arbitration?JSON.stringify(record.arbitration):null,paperOrderAttempted?1:0,now).run();
+ if(Number(result.meta?.changes??0)===1)await audit(env,'amd.forward.opportunity.recorded','amd-forward-observer',{symbol,sessionDate:record.sessionDate,observedAt:record.observedAt,status,direction:record.direction,paperOrderAttempted,paperOpened});
+ return {...record,status,reason:reasons,paperOrderAttempted,paperOpened,paperExecution,recorded:Number(result.meta?.changes??0)===1,dedupeKey};
 }
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
@@ -270,6 +314,46 @@ async function route(request:Request,env:Env):Promise<Response>{
  const closeMatch=path.match(/^\/api\/paper\/positions\/([a-f0-9-]+)\/close$/i);
  if(closeMatch&&request.method==='POST'){const position=await env.DB.prepare("SELECT * FROM paper_positions WHERE position_id=?").bind(closeMatch[1]).first<any>();if(!position||position.status!=='open')return json({error:'Open paper position not found'},404);const bundle=await marketBundle(env,String(position.symbol));const body=await request.json().catch(()=>({})) as any;const reason=typeof body.reason==='string'?body.reason.slice(0,80):'operator-close';const result=await closePaperPosition(env,position,bundle.book,reason);return json(result,result.closed?200:409);}
  if(path==='/api/portfolio'&&request.method==='GET'){const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return json({configured:!!row,reconciled:row?.reconciled===1,account:row?{equity:row.equity,peakEquity:row.peak_equity,dailyLossPct:row.daily_loss_pct,weeklyLossPct:row.weekly_loss_pct,monthlyLossPct:row.monthly_loss_pct,openPositions:row.open_positions,leverage:row.leverage,marginUtilisationPct:row.margin_utilisation_pct}:null,liveTradingEnabled:false});}
+ if(path==='/api/amd/replay'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<1||days>60)return json({error:'Valid symbol and 1–60 day history window are required'},400);
+  const candles=await fetchAmdHistory(env,symbol,days),config={...({} as AmdValidationConfig),...(body.config||{}),timezone:String(body.timezone||body.config?.timezone||env.AMD_SESSION_TIMEZONE||'UTC')},result=replayAmdSessions(candles,config);
+  if(!result.valid)return json({error:'AMD replay validation failed',reasons:result.errors},422);
+  const costSensitivity=amdCostSensitivity(candles,result.config),runId=await saveAmdValidation(env,symbol,'replay',result.config,{...result,costSensitivity},result.metrics);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,costSensitivity,liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/optimise'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<10||days>60)return json({error:'Valid symbol and 10–60 day history window are required for optimisation'},400);
+  const candles=await fetchAmdHistory(env,symbol,days),result=optimiseAmdParameters(candles,{timezones:Array.isArray(body.timezones)?body.timezones.slice(0,6):[env.AMD_SESSION_TIMEZONE||'UTC','Africa/Accra','Europe/London'],sweepSensitivitiesBps:Array.isArray(body.sweepSensitivitiesBps)?body.sweepSensitivitiesBps.slice(0,6):[0,5,10],arrayStrengths:Array.isArray(body.arrayStrengths)?body.arrayStrengths.slice(0,6):[65,75,85]});
+  const runId=await saveAmdValidation(env,symbol,'optimisation',body,result,result.best);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/walk-forward'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30),folds=Number(body.folds??3);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<15||days>60||!Number.isInteger(folds)||folds<2||folds>5)return json({error:'Walk-forward requires a valid symbol, 15–60 days and 2–5 folds'},400);
+  const candles=await fetchAmdHistory(env,symbol,days),result=walkForwardAmd(candles,folds);
+  const runId=await saveAmdValidation(env,symbol,'walk-forward',{days,folds},result,result.aggregate);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/forward/run'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid symbol'},400);
+  return json(await runAmdForwardScan(env,symbol));
+ }
+ if(path==='/api/amd/forward'&&request.method==='GET'){
+  const symbol=url.searchParams.get('symbol'),status=url.searchParams.get('status'),requested=Number(url.searchParams.get('limit')||100),limit=Number.isFinite(requested)?Math.min(500,Math.max(1,requested)):100;
+  const rows=await env.DB.prepare('SELECT opportunity_id,symbol,session_date,observed_at,phase,status,direction,reason_json,assessment_json,arbitration_json,paper_order_attempted,created_at FROM amd_forward_opportunities WHERE (? IS NULL OR symbol=?) AND (? IS NULL OR status=?) ORDER BY observed_at DESC LIMIT ?').bind(symbol,symbol,status,status,limit).all<any>();
+  return json({opportunities:rows.results.map(r=>({...r,reason:JSON.parse(r.reason_json),assessment:JSON.parse(r.assessment_json),arbitration:r.arbitration_json?JSON.parse(r.arbitration_json):null})),liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/validation/runs'&&request.method==='GET'){
+  const symbol=url.searchParams.get('symbol'),rows=await env.DB.prepare('SELECT run_id,symbol,run_type,strategy_version,started_at,completed_at,config_json,metrics_json FROM amd_validation_runs WHERE (? IS NULL OR symbol=?) ORDER BY completed_at DESC LIMIT 50').bind(symbol,symbol).all<any>();
+  return json({runs:rows.results.map(r=>({...r,config:JSON.parse(r.config_json),metrics:JSON.parse(r.metrics_json)})),liveExecutionEnabled:false});
+ }
  if(path==='/api/institutional/strategy/run'&&request.method==='POST'){
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid symbol'},400);
@@ -307,7 +391,7 @@ async function route(request:Request,env:Env):Promise<Response>{
 }
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{try{return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},
- async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(env.AUTO_PAPER_ENABLED==='true'&&new Date(createdAt).getUTCMinutes()%5===0)tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
+ async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),fiveMinuteTick=new Date(createdAt).getUTCMinutes()%5===0,tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan' as const,symbol,createdAt},{id:uuid(),kind:'institutional-scan' as const,symbol,createdAt}]);if(fiveMinuteTick){tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'amd-forward-scan' as const,symbol,createdAt})));if(env.AUTO_PAPER_ENABLED==='true')tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));}await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
@@ -345,6 +429,9 @@ export class AgentOrchestrator {
      if(this.env.AUTO_PAPER_ENABLED!=='true')throw new Error('Automatic paper strategy workflow is disabled');
      const result=await runInstitutionalStrategyWorkflow(this.env,task.symbol,true);
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'institutional:supervisor','institutional-strategy-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    }else if(task.kind==='amd-forward-scan'){
+     const result=await runAmdForwardScan(this.env,task.symbol);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'institutional:AMD Session Phase Intelligence','amd-forward-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
      const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
      const evidence=handlerForInstitutionalFinding(finding,rt);
