@@ -112,7 +112,7 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
   return raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])})).filter(c=>c.closeTime<=Date.now());
  }));
  const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},account=await getPaperAccount(env),equity=Number(account?.equity??0);
- const config={...defaultInstitutionalStrategyConfig,riskPct:Math.min(.2,Number(.2))};
+ const config={...defaultInstitutionalStrategyConfig,riskPct:defaultInstitutionalStrategyConfig.riskPct};
  const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());
  const replay=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000);
  const walkForward=walkForwardInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000,4);
@@ -301,7 +301,7 @@ async function route(request:Request,env:Env):Promise<Response>{
 }
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{try{return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},
- async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan',symbol,createdAt},{id:uuid(),kind:'institutional-scan',symbol,createdAt}]);if(env.AUTO_PAPER_ENABLED==='true'&&new Date(createdAt).getUTCMinutes()%5===0)tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
+ async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks:Task[]=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan',symbol,createdAt},{id:uuid(),kind:'institutional-scan',symbol,createdAt}]);if(env.AUTO_PAPER_ENABLED==='true'&&new Date(createdAt).getUTCMinutes()%5===0)tasks.push(...symbols.map(symbol=>({id:uuid(),kind:'institutional-strategy-scan' as const,symbol,createdAt})));await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
