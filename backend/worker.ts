@@ -40,8 +40,8 @@ async function loadDerivatives(symbol:string):Promise<DerivativesSnapshot|null>{
  const base='https://fapi.binance.com';
  try{
   const [premiumResponse,interestResponse]=await Promise.all([
-   fetch(base+'/fapi/v1/premiumIndex?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'}}),
-   fetch(base+'/fapi/v1/openInterest?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'}})
+   fetch(base+'/fapi/v1/premiumIndex?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'},signal:AbortSignal.timeout(5000)}),
+   fetch(base+'/fapi/v1/openInterest?symbol='+encodeURIComponent(symbol),{headers:{accept:'application/json'},signal:AbortSignal.timeout(5000)})
   ]);
   if(!premiumResponse.ok||!interestResponse.ok)return null;
   const [premium,interest]=await Promise.all([premiumResponse.json() as Promise<any>,interestResponse.json() as Promise<any>]);
