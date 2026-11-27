@@ -47,16 +47,19 @@ export function analyseAmdSession(candles:StrategyCandle[],now=Date.now(),timezo
  if(phase==='manipulation')reasons.push('Manipulation phase: entries are strictly forbidden');
  if(phase==='distribution'&&manipulation.length<6)reasons.push('Insufficient completed manipulation-phase candles to establish the range');
  const last=distribution.at(-1),history=[...manipulation,...distribution];
- const sensitivity=Math.max(0,Math.min(50,options.sweepSensitivityBps??0))/10000;\n const aTR=atr(history),sweptHigh=mr.high!==null&&distribution.some(c=>c.high>mr.high!*(1+sensitivity)&&c.close<mr.high!),sweptLow=mr.low!==null&&distribution.some(c=>c.low<mr.low!*(1-sensitivity)&&c.close>mr.low!);
- let cisd:AmdDirection='neutral',mss:AmdDirection='neutral';
- if(last&&manipulation.length>=2){
+ const sensitivity=Math.max(0,Math.min(50,options.sweepSensitivityBps??0))/10000;
+ const aTR=atr(history),sweptHigh=mr.high!==null&&distribution.some(c=>c.high>mr.high!*(1+sensitivity)&&c.close<mr.high!),sweptLow=mr.low!==null&&distribution.some(c=>c.low<mr.low!*(1-sensitivity)&&c.close>mr.low!);
+ let cisd:AmdDirection='neutral',mss:AmdDirection='neutral',confirmed:AmdDirection='neutral',lastStructureTime=-1;
+ if(manipulation.length>=2){
   const bearish=manipulation.slice().reverse().find(c=>c.close<c.open),bullish=manipulation.slice().reverse().find(c=>c.close>c.open);
-  if(bearish&&last.close>bearish.open&&last.close>last.open&&aTR>0&&last.close-last.open>=aTR*.35)cisd='bullish';
-  if(bullish&&last.close<bullish.open&&last.close<last.open&&aTR>0&&last.open-last.close>=aTR*.35)cisd='bearish';
-  const prior=history.slice(0,-1).slice(-10);
-  if(prior.length>=5&&aTR>0){const sh=Math.max(...prior.slice(0,-1).map(c=>c.high)),sl=Math.min(...prior.slice(0,-1).map(c=>c.low));if(last.close>sh&&last.close-last.open>=aTR*.35)mss='bullish';if(last.close<sl&&last.open-last.close>=aTR*.35)mss='bearish';}
+  for(let i=0;i<distribution.length;i++){
+   const candidate=distribution[i],priorHistory=[...manipulation,...distribution.slice(0,i)],candidateHistory=[...priorHistory,candidate],candidateAtr=atr(candidateHistory);
+   if(bearish&&candidate.close>bearish.open&&candidate.close>candidate.open&&candidateAtr>0&&candidate.close-candidate.open>=candidateAtr*.35){cisd='bullish';if(candidate.closeTime>=lastStructureTime){confirmed='bullish';lastStructureTime=candidate.closeTime;}}
+   if(bullish&&candidate.close<bullish.open&&candidate.close<candidate.open&&candidateAtr>0&&candidate.open-candidate.close>=candidateAtr*.35){cisd='bearish';if(candidate.closeTime>=lastStructureTime){confirmed='bearish';lastStructureTime=candidate.closeTime;}}
+   const prior=priorHistory.slice(-10);
+   if(prior.length>=5&&candidateAtr>0){const sh=Math.max(...prior.slice(0,-1).map(c=>c.high)),sl=Math.min(...prior.slice(0,-1).map(c=>c.low));if(candidate.close>sh&&candidate.close-candidate.open>=candidateAtr*.35){mss='bullish';if(candidate.closeTime>=lastStructureTime){confirmed='bullish';lastStructureTime=candidate.closeTime;}}if(candidate.close<sl&&candidate.open-candidate.close>=candidateAtr*.35){mss='bearish';if(candidate.closeTime>=lastStructureTime){confirmed='bearish';lastStructureTime=candidate.closeTime;}}}
+  }
  }
- const confirmed:AmdDirection=cisd!=='neutral'?cisd:mss;
  const pd=arrays(manipulation,Math.max(50,Math.min(100,options.minArrayStrength??65))),price=last?.close??null;
  const touched=price===null?[]:pd.filter(z=>z.side===confirmed&&z.strength>=65&&price>=z.low&&price<=z.high);
  const sweepSupports=(confirmed==='bullish'&&sweptLow)||(confirmed==='bearish'&&sweptHigh);
