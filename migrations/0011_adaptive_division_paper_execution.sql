@@ -54,3 +54,5 @@ CREATE TABLE IF NOT EXISTS division_paper_fills (
 );
 CREATE INDEX IF NOT EXISTS idx_division_fills_position_time ON division_paper_fills(position_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_division_performance_closed ON division_performance(division_id,closed_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_division_one_open_symbol ON division_paper_positions(division_id,symbol) WHERE status IN ('open','closing');
