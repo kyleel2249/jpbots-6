@@ -241,7 +241,7 @@ The global scanner is a **market-data discovery and research system**, not a bac
 
 ### Current provider coverage
 
-- Binance Spot: exchange-wide active USDT, USDC and FDUSD spot catalog plus 24-hour tickers.
+- Binance Spot: exchange-wide active USDT, USDC, FDUSD, BTC and ETH quote spot catalog plus 24-hour tickers; BTC/ETH-quoted turnover is normalised to USD when reference prices are available.
 - Binance USD-M: active USDT/USDC perpetual contract catalog and 24-hour tickers.
 - Bitget Spot and Bitget USDT perpetual: public exchange-wide ticker feeds.
 - Bybit Spot and Linear USDT perpetual: public exchange-wide ticker feeds.
@@ -262,7 +262,7 @@ To enable Twelve Data coverage, create an API key with the provider and store it
 npx wrangler secret put TWELVEDATA_API_KEY
 ```
 
-Do not put provider keys in frontend variables, source files, Pages static assets, or browser storage. The current adapter rotates through a small six-symbol quote set to limit free-tier request usage. The provider's plan and rate limits determine actual coverage.
+Do not put provider keys in frontend variables, source files, Pages static assets, or browser storage. The current adapter rotates through a 15-symbol equity, index, forex and commodity set, requesting six quotes per scan to respect provider limits to limit free-tier request usage. The provider's plan and rate limits determine actual coverage.
 
 ### Scanner endpoints
 
