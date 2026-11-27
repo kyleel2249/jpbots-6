@@ -18,7 +18,7 @@ interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
@@ -260,7 +260,7 @@ async function route(request:Request,env:Env):Promise<Response>{
 }
 export default {
  async fetch(request:Request,env:Env):Promise<Response>{try{return cors(await route(request,env));}catch(error){return cors(json({error:error instanceof Error?error.message:'Unexpected backend failure',liveTradingEnabled:false},502));}},
- async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id);await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(['BTCUSDT','ETHUSDT','SOLUSDT'].map(symbol=>({id:uuid(),kind:'market-scan',symbol,createdAt:Date.now()})))});}
+ async scheduled(_event:any,env:Env):Promise<void>{const id=env.ORCHESTRATOR.idFromName('global'),stub=env.ORCHESTRATOR.get(id),symbols=['BTCUSDT','ETHUSDT','SOLUSDT'],createdAt=Date.now(),tasks=symbols.flatMap(symbol=>[{id:uuid(),kind:'market-scan',symbol,createdAt},{id:uuid(),kind:'institutional-scan',symbol,createdAt}]);await stub.fetch('https://orchestrator/enqueue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(tasks)});}
 };
 export class AgentOrchestrator {
  constructor(private state:DurableState,private env:Env){}
@@ -280,6 +280,20 @@ export class AgentOrchestrator {
     if(task.kind==='market-scan'){
      const result=await runMarketScan(this.env,task.symbol);
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
+    }else if(task.kind==='institutional-scan'){
+     const bundle=await marketBundle(this.env,task.symbol),raw=await getJson<Kline[]>(binance(this.env)+'/api/v3/klines?symbol='+encodeURIComponent(task.symbol)+'&interval=1m&limit=120');
+     const candles=raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
+     const trades=(bundle.book.trades??[]).filter((t):t is {price:number;quantity:number;aggressor:'buy'|'sell';timestamp:number}=>t.aggressor==='buy'||t.aggressor==='sell');
+     const analysis=analyseInstitutionalMarket({symbol:task.symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades}),analysisId=uuid(),createdAt=Date.now();
+     const roleTasks=analysis.findings.map(f=>({id:uuid(),kind:'institutional-role' as const,symbol:task.symbol,createdAt,roleId:'institutional:'+f.agent,correlationId:analysisId,payload:f}));
+     if(queue.length+roleTasks.length>500)throw new Error('Durable task queue capacity reached; institutional scan deferred');
+     await this.env.DB.batch([
+      this.env.DB.prepare('INSERT INTO institutional_analyses(analysis_id,symbol,observed_at,source,result_json) VALUES(?,?,?,?,?)').bind(analysisId,task.symbol,createdAt,'Binance Spot public REST scheduled scan',JSON.stringify(analysis)),
+      ...roleTasks.map(t=>this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'queued',?,?,?,NULL)").bind(t.id,t.roleId,'institutional-role-analysis',createdAt,createdAt,JSON.stringify({symbol:task.symbol,analysisId,roleId:t.roleId,finding:t.payload})))
+     ]);
+     queue.push(...roleTasks);
+     await this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify({analysisId,roleTasks:roleTasks.length}),task.id).run();
+     await audit(this.env,'institutional.scheduled.scan.completed','institutional-intelligence-engine',{analysisId,symbol:task.symbol,roleTasks:roleTasks.length});
     }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
      const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
      const evidence=handlerForInstitutionalFinding(finding,rt);
