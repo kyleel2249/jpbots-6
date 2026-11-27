@@ -739,7 +739,7 @@ export class AgentOrchestrator {
  async alarm():Promise<void>{
   const now=Date.now(),minuteKey=new Date(now).toISOString().slice(0,16),lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute');
   let queue=await this.state.storage.get<Task[]>('queue')??[];
-  if(minuteKey!==lastScheduledMinute){const tasks=buildScheduledScannerTasks(now,this.env.AUTO_PAPER_ENABLED==='true',uuid);const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
+  if(minuteKey!==lastScheduledMinute){let hasOpenDivisionPositions=false;try{const open=await this.env.DB.prepare("SELECT COUNT(*) AS count FROM division_paper_positions WHERE status IN ('open','closing')").first<any>();hasOpenDivisionPositions=Number(open?.count||0)>0;}catch{}const tasks=buildScheduledScannerTasks(now,this.env.AUTO_PAPER_ENABLED==='true',uuid,hasOpenDivisionPositions);const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
   const batch=queue.splice(0,SCANNER_TASKS_PER_ALARM);let processed=0,nextDelay=1000;
   for(const task of batch){try{
     await this.env.DB.batch([
