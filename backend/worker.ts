@@ -1,5 +1,5 @@
 import { allAgentRoles, departments, platformServices } from '../src/departments';
-import { buildMarketReport, evaluateIntegratedOpportunity } from '../src/intelligence';
+import { buildMarketReport, evaluateIntegratedOpportunity, monteCarloRisk } from '../src/intelligence';
 import { runEmaBacktest } from '../src/backtesting';
 import type { Snapshot } from '../src/intelligence';
 import { analyseOrderBook, capitalAuthority, defaultCapitalPolicy } from '../src/shared-services';
@@ -248,7 +248,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());
   const replay=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000);
   const walkForward=walkForwardInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000,4);
-  const oos=walkForward.outOfSample?.metrics??null,qualification={status:'research-only',liveExecutionEnabled:false,checks:{replayValid:replay.valid,walkForwardValid:walkForward.valid,minimumReplayTrades:(replay.metrics?.tradeCount??0)>=100,minimumOosTrades:(oos?.tradeCount??0)>=50,positiveOosExpectancy:(oos?.expectancy??0)>0,drawdownWithinPolicy:(oos?.maxDrawdownPct??100)<=5},reasons:[] as string[]};
+  const oos=walkForward.outOfSample?.metrics??null,returns=(replay.valid?replay.trades:[]).map(t=>t.netPct),monteCarlo=monteCarloRisk(returns,2000,100,42),costSensitivity=[0,5,10].map(extraBps=>{const scenario=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},{...config,slippageBps:config.slippageBps+extraBps},10000);return {extraSlippageBps:extraBps,metrics:scenario.metrics};}),qualification={status:'research-only',liveExecutionEnabled:false,checks:{replayValid:replay.valid,walkForwardValid:walkForward.valid,minimumReplayTrades:(replay.metrics?.tradeCount??0)>=100,minimumOosTrades:(oos?.tradeCount??0)>=50,positiveOosExpectancy:(oos?.expectancy??0)>0,drawdownWithinPolicy:(oos?.maxDrawdownPct??100)<=5},reasons:[] as string[]};
   for(const [key,passed] of Object.entries(qualification.checks))if(!passed)qualification.reasons.push(key+' not satisfied');
   const runId=uuid(),createdAt=Date.now(),autoPaperRequested=body.autoPaper===true;let paperExecution:any={attempted:false,opened:false,reason:'Automatic paper entry not requested'};
   if(autoPaperRequested){
@@ -257,7 +257,7 @@ async function route(request:Request,env:Env):Promise<Response>{
    else if(!nearPlan||!geometry)paperExecution={attempted:false,opened:false,reason:'Current executable price is not sufficiently close to the planned entry or violates stop/target geometry'};
    else{const result=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:config.riskPct,feeBps:config.feeBps,strategy:'institutional-mtf-v1'});paperExecution={attempted:true,opened:!!result.position, ...result};}
   }
-  const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
+  const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,monteCarlo,costSensitivity,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
   await env.DB.prepare('INSERT INTO institutional_strategy_runs(run_id,symbol,mode,strategy_version,created_at,result_json,qualification_json) VALUES(?,?,?,?,?,?,?)').bind(runId,symbol,autoPaperRequested?'automatic-paper':'analysis','institutional-mtf-v1',createdAt,JSON.stringify(result),JSON.stringify(qualification)).run();
   await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
   return json(result);
