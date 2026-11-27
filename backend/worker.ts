@@ -2,8 +2,9 @@ import { allAgentRoles, departments, platformServices } from '../src/departments
 import { buildMarketReport, evaluateIntegratedOpportunity } from '../src/intelligence';
 import { runEmaBacktest } from '../src/backtesting';
 import type { Snapshot } from '../src/intelligence';
-import { analyseOrderBook } from '../src/shared-services';
+import { analyseOrderBook, capitalAuthority, defaultCapitalPolicy } from '../src/shared-services';
 import type { Evidence, OrderBookSnapshot, CapitalState } from '../src/shared-services';
+import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -43,6 +44,63 @@ async function marketBundle(env:Env,symbol:string){
  const snapshot:Snapshot={symbol,timestamp:now,source:'Binance Spot public REST',timeframe:'1m',prices:closes,volumes:raw.map(k=>Number(k[5])),spreadBps,dataQuality:.95};
  return {snapshot,book,closes,ema9:ema(closes,9),ema21:ema(closes,21),rsi14:rsi(closes),lastPrice:closes[closes.length-1],candleCloseTime:Number(last[6]),observedAt:now};
 }
+
+async function getPaperAccount(env:Env){return env.DB.prepare("SELECT * FROM paper_accounts WHERE account_id='default'").first<any>();}
+function paperCapital(row:any,exchangeHealthy=true,dataFresh=true):CapitalState{return {equity:Number(row?.equity??0),peakEquity:Number(row?.peak_equity??0),dailyLossPct:Number(row?.daily_loss_pct??0),weeklyLossPct:Number(row?.weekly_loss_pct??0),monthlyLossPct:Number(row?.monthly_loss_pct??0),openPositions:Number(row?.open_positions??0),correlatedExposurePct:0,leverage:1,marginUtilisationPct:0,exchangeHealthy,dataFresh,accountReconciled:!!row};}
+function paperWeekKey(timestamp:number){const d=new Date(timestamp);d.setUTCHours(0,0,0,0);d.setUTCDate(d.getUTCDate()-((d.getUTCDay()+6)%7));return d.toISOString().slice(0,10);}
+async function closePaperPosition(env:Env,position:any,book:OrderBookSnapshot,reason:string){
+ const claimed=await env.DB.prepare("UPDATE paper_positions SET status='closing' WHERE position_id=? AND status='open'").bind(position.position_id).run();
+ if(Number(claimed.meta?.changes??0)!==1)return {closed:false,reason:'position is no longer open'};
+ const config=JSON.parse(String(position.payload_json||'{}')) as {feeBps?:number};
+ const feeBps=Number.isFinite(config.feeBps)?Number(config.feeBps):10,now=Date.now();
+ const exit=planPaperLongExit({book,quantity:Number(position.quantity),entryPrice:Number(position.entry_price),entryFee:Number(position.entry_fee),feeBps,now});
+ if(!exit.valid||exit.averageExitPrice===null){await env.DB.prepare("UPDATE paper_positions SET status='open' WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,errors:exit.errors};}
+ const account=await getPaperAccount(env);if(!account){await env.DB.prepare("UPDATE paper_positions SET status='open' WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,reason:'paper account unavailable'};}
+ const equityBefore=Number(account.equity),equityAfter=equityBefore+exit.netPnl,peak=Math.max(Number(account.peak_equity),equityAfter);
+ const dayKey=new Date(now).toISOString().slice(0,10),weekKey=paperWeekKey(now),monthKey=dayKey.slice(0,7);
+ const dayStart=account.day_key===dayKey&&Number(account.day_start_equity)>0?Number(account.day_start_equity):equityBefore;
+ const weekStart=account.week_key===weekKey&&Number(account.week_start_equity)>0?Number(account.week_start_equity):equityBefore;
+ const monthStart=account.month_key===monthKey&&Number(account.month_start_equity)>0?Number(account.month_start_equity):equityBefore;
+ const loss=(start:number)=>start>0?Math.max(0,(start-equityAfter)/start*100):100;
+ const openPositions=Math.max(0,Number(account.open_positions)-1),fillId=uuid();
+ await env.DB.batch([
+  env.DB.prepare("UPDATE paper_positions SET status='closed',closed_at=?,exit_price=?,exit_fee=?,gross_pnl=?,net_pnl=?,exit_reason=? WHERE position_id=? AND status='closing'").bind(now,exit.averageExitPrice,exit.exitFee,exit.grossPnl,exit.netPnl,reason,position.position_id),
+  env.DB.prepare("INSERT INTO paper_fills(fill_id,position_id,symbol,side,quantity,price,fee,slippage_bps,created_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(fillId,position.position_id,position.symbol,'sell',exit.filledQuantity,exit.averageExitPrice,exit.exitFee,exit.slippageBps,now,JSON.stringify({reason,netPnl:exit.netPnl})),
+  env.DB.prepare("INSERT INTO paper_execution_events(event_id,symbol,side,event_type,observed_at,payload_json) VALUES(?,?,?,?,?,?)").bind(uuid(),position.symbol,'sell','paper.position.closed',now,JSON.stringify({positionId:position.position_id,reason,exit})),
+  env.DB.prepare("UPDATE paper_accounts SET equity=?,peak_equity=?,daily_loss_pct=?,weekly_loss_pct=?,monthly_loss_pct=?,open_positions=?,day_key=?,day_start_equity=?,week_key=?,week_start_equity=?,month_key=?,month_start_equity=?,updated_at=? WHERE account_id='default'").bind(equityAfter,peak,loss(dayStart),loss(weekStart),loss(monthStart),openPositions,dayKey,dayStart,weekKey,weekStart,monthKey,monthStart,now)
+ ]);
+ await audit(env,'paper.position.closed','paper-execution-engine',{positionId:position.position_id,symbol:position.symbol,reason,netPnl:exit.netPnl,equityAfter});
+ return {closed:true,positionId:position.position_id,exitPrice:exit.averageExitPrice,grossPnl:exit.grossPnl,netPnl:exit.netPnl,reason};
+}
+async function monitorPaperPositions(env:Env,symbol:string,book:OrderBookSnapshot){
+ const rows=await env.DB.prepare("SELECT * FROM paper_positions WHERE symbol=? AND status='open' ORDER BY opened_at ASC LIMIT 25").bind(symbol).all<any>();
+ const results=[];
+ for(const position of rows.results){const reason=book.mid<=Number(position.stop_price)?'stop-loss':book.mid>=Number(position.target_price)?'take-profit':null;if(reason)results.push(await closePaperPosition(env,position,book,reason));}
+ return results;
+}
+async function createPaperOrder(env:Env,body:any){
+ const symbol=String(body.symbol||'').toUpperCase(),stopPrice=Number(body.stopPrice),targetPrice=Number(body.targetPrice),riskPct=Number(body.riskPct??0.2),feeBps=Number(body.feeBps??10);
+ if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(stopPrice)||!Number.isFinite(targetPrice)||!Number.isFinite(riskPct)||!Number.isFinite(feeBps))return {error:'symbol, stopPrice, targetPrice and valid risk/fee values are required',status:400};
+ const account=await getPaperAccount(env);if(!account)return {error:'Paper account has not been initialized; apply database migrations',status:503};
+ const bundle=await marketBundle(env,symbol),capital=paperCapital(account,true,Date.now()-bundle.book.timestamp<=90000),risk=capitalAuthority(capital,defaultCapitalPolicy);
+ if(!risk.allowNewEntries)return {error:'Paper capital protection veto',reasons:risk.reasons,status:409};
+ const plan=planPaperLongEntry({book:bundle.book,equity:capital.equity,stopPrice,targetPrice,riskPct,feeBps,maxRiskPct:defaultCapitalPolicy.maxRiskPerTradePct,now:Date.now()});
+ if(!plan.valid||plan.averageFillPrice===null)return {error:'Paper order rejected',reasons:plan.errors,status:422};
+ const positionId=uuid(),fillId=uuid(),now=Date.now(),strategy=String(body.strategy||'operator-paper-test').slice(0,100);
+ const reservation=await env.DB.prepare("UPDATE paper_accounts SET open_positions=open_positions+1,updated_at=? WHERE account_id='default' AND open_positions < ? AND equity > 0").bind(now,defaultCapitalPolicy.maxPositions).run();
+ if(Number(reservation.meta?.changes??0)!==1)return {error:'Paper position capacity was reached concurrently',status:409};
+ const payload={feeBps,source:bundle.book.symbol?'Binance Spot public order book':'unknown',referencePrice:plan.referencePrice,slippageBps:plan.slippageBps,netRewardRisk:plan.netRewardRisk};
+ try{
+  await env.DB.batch([
+   env.DB.prepare("INSERT INTO paper_positions(position_id,symbol,side,quantity,entry_price,stop_price,target_price,entry_fee,risk_pct,strategy,status,opened_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,'open',?,?)").bind(positionId,symbol,'long',plan.quantity,plan.averageFillPrice,stopPrice,targetPrice,plan.entryFee,plan.actualRiskPct,strategy,now,JSON.stringify(payload)),
+   env.DB.prepare("INSERT INTO paper_fills(fill_id,position_id,symbol,side,quantity,price,fee,slippage_bps,created_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(fillId,positionId,symbol,'buy',plan.quantity,plan.averageFillPrice,plan.entryFee,plan.slippageBps,now,JSON.stringify({referencePrice:plan.referencePrice,notional:plan.notional})),
+   env.DB.prepare("INSERT INTO paper_execution_events(event_id,symbol,side,event_type,observed_at,payload_json) VALUES(?,?,?,?,?,?)").bind(uuid(),symbol,'buy','paper.position.opened',now,JSON.stringify({positionId,plan,strategy}))
+  ]);
+ }catch(error){await env.DB.prepare("UPDATE paper_accounts SET open_positions=MAX(0,open_positions-1),updated_at=? WHERE account_id='default'").bind(Date.now()).run();throw error;}
+ await audit(env,'paper.position.opened','paper-execution-engine',{positionId,symbol,quantity:plan.quantity,entryPrice:plan.averageFillPrice,riskPct:plan.actualRiskPct,strategy});
+ return {position:{positionId,symbol,side:'long',quantity:plan.quantity,entryPrice:plan.averageFillPrice,stopPrice,targetPrice,riskPct:plan.actualRiskPct,entryFee:plan.entryFee,status:'open',openedAt:now},execution:{referencePrice:plan.referencePrice,slippageBps:plan.slippageBps,netRewardRisk:plan.netRewardRisk},liveTradingEnabled:false};
+}
+
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
  const mtfRows=await Promise.all(['5m','15m','1h','4h'].map(async interval=>{const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=80');const closes=rows.map(k=>Number(k[4]));const fast=ema(closes,9),slow=ema(closes,21);return {interval,fast,slow,direction:fast===null||slow===null?'unknown':fast>slow?'bullish':fast<slow?'bearish':'neutral',lastClose:closes[closes.length-1]};}));
@@ -58,6 +116,7 @@ async function runMarketScan(env:Env,symbol:string){
  await env.DB.prepare('INSERT INTO orderbook_snapshots(id,symbol,source,observed_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),symbol,'Binance Spot public REST',bundle.observedAt,JSON.stringify(result.orderBook)).run();
  await env.DB.prepare('INSERT INTO scan_decisions(id,symbol,observed_at,market_regime,direction,decision,blockers_json,report_json) VALUES(?,?,?,?,?,?,?,?)').bind(id,symbol,bundle.observedAt,String(report.regime),String(report.direction),'observation-only',JSON.stringify(blockers),JSON.stringify(decision)).run();
  await audit(env,'market.scan.completed','scheduled-market-scanner',{id,symbol,tradeAuthorized:false,blockers});
+ await monitorPaperPositions(env,symbol,bundle.book);
  return decision;
 }
 async function route(request:Request,env:Env):Promise<Response>{
@@ -110,6 +169,13 @@ async function route(request:Request,env:Env):Promise<Response>{
   const pairs=await getJson<any[]>(dexscreener(env)+'/token-pairs/v1/solana/'+token);
   return json({chain:'solana',source:'DexScreener',pairs:(pairs||[]).map(p=>({pairAddress:p.pairAddress,dexId:p.dexId,baseToken:p.baseToken,quoteToken:p.quoteToken,priceUsd:Number(p.priceUsd||0),liquidityUsd:Number(p.liquidity?.usd||0),volume24h:Number(p.volume?.h24||0),priceChange24h:Number(p.priceChange?.h24||0),url:p.url}))});
  }
+
+ if(path==='/api/paper/account'&&request.method==='GET'){const account=await getPaperAccount(env);return json({configured:!!account,account:account?{accountId:account.account_id,mode:'paper',initialEquity:account.initial_equity,equity:account.equity,peakEquity:account.peak_equity,dailyLossPct:account.daily_loss_pct,weeklyLossPct:account.weekly_loss_pct,monthlyLossPct:account.monthly_loss_pct,openPositions:account.open_positions,updatedAt:account.updated_at}:null,liveTradingEnabled:false});}
+ if(path==='/api/paper/positions'&&request.method==='GET'){const rows=await env.DB.prepare("SELECT * FROM paper_positions ORDER BY opened_at DESC LIMIT 100").all<any>();return json({positions:rows.results,liveTradingEnabled:false});}
+ if(path==='/api/paper/fills'&&request.method==='GET'){const rows=await env.DB.prepare("SELECT * FROM paper_fills ORDER BY created_at DESC LIMIT 200").all<any>();return json({fills:rows.results,liveTradingEnabled:false});}
+ if(path==='/api/paper/orders'&&request.method==='POST'){const body=await request.json().catch(()=>null);if(!body||body.mode!=='paper'||body.side!=='long')return json({error:"Only explicit paper-mode long orders are supported by this simulator",liveTradingEnabled:false},400);const result=await createPaperOrder(env,body);const status=Number((result as any).status??200);return json(result,status);}
+ const closeMatch=path.match(/^\/api\/paper\/positions\/([a-f0-9-]+)\/close$/i);
+ if(closeMatch&&request.method==='POST'){const position=await env.DB.prepare("SELECT * FROM paper_positions WHERE position_id=?").bind(closeMatch[1]).first<any>();if(!position||position.status!=='open')return json({error:'Open paper position not found'},404);const bundle=await marketBundle(env,String(position.symbol));const body=await request.json().catch(()=>({})) as any;const reason=typeof body.reason==='string'?body.reason.slice(0,80):'operator-close';const result=await closePaperPosition(env,position,bundle.book,reason);return json(result,result.closed?200:409);}
  if(path==='/api/portfolio'&&request.method==='GET'){const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return json({configured:!!row,reconciled:row?.reconciled===1,account:row?{equity:row.equity,peakEquity:row.peak_equity,dailyLossPct:row.daily_loss_pct,weeklyLossPct:row.weekly_loss_pct,monthlyLossPct:row.monthly_loss_pct,openPositions:row.open_positions,leverage:row.leverage,marginUtilisationPct:row.margin_utilisation_pct}:null,liveTradingEnabled:false});}
  if(path==='/api/backtest'&&request.method==='POST'){
   const body=await request.json().catch(()=>({})) as any;

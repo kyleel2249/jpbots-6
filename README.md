@@ -36,6 +36,7 @@ The catalogue includes 10 scalping bots, 10 day-trading bots and 19 advanced str
 - **Real DexScreener token-pair lookup** for a supplied Solana token mint. This is read-only lookup, not a complete new-pair stream or DEX execution adapter.
 - **Historical backtesting API** using Binance candles and a spot long-only EMA crossover research strategy. Fills are modelled at the next candle open; configurable fee and slippage assumptions are applied on entry and exit; intratrade favourable/adverse excursions and drawdown are marked using candle highs/lows; results include net P&L, win rate, profit factor, expectancy and a 70/30 in-sample/out-of-sample split.
 - **Shared intelligence and risk primitives** for order-book imbalance, weighted imbalance, cumulative depth, microprice, trade imbalance, market reports, evidence arbitration, capital veto, trader qualification, portfolio stress and deployment qualification.
+- **Persistent paper execution ledger** with a clearly separate simulated account, risk-based spot-long sizing, ask/bid depth consumption, partial-fill rejection, fee/slippage accounting, stop/target validation, position close accounting and audit events. The initial paper balance is simulated USD 10,000, not real funds. The simulator currently supports spot-long paper positions only.
 - **Dashboard market prices** now come from the backend API. Synthetic random price movement, fabricated ticker changes, synthetic paper P&L and fake agent activity were removed. Account equity remains unconfigured until a reconciled account source exists.
 
 ### Backend API surface
@@ -46,6 +47,8 @@ The catalogue includes 10 scalping bots, 10 day-trading bots and 19 advanced str
 - `GET /api/market/bitget/tickers` for public Bitget Spot/Margin-reference and futures-category tickers
 - `GET /api/solana/new-pools` and `GET /api/solana/pairs?token=...`
 - `POST /api/scan`, `POST /api/backtest`, and `GET /api/backtests`
+- `GET /api/paper/account`, `GET /api/paper/positions`, `GET /api/paper/fills`
+- `POST /api/paper/orders` (requires `mode: "paper"` and `side: "long"`), `POST /api/paper/positions/:id/close`
 
 ### Department runtime coverage
 
@@ -59,7 +62,7 @@ Requirements: Node.js 22+ and npm.
 2. Apply the local D1 schema: `npm run db:local`.
 3. Start the Worker in one terminal: `npm run dev:backend`.
 4. Start the dashboard in another terminal: `npm run dev`.
-5. Verify: `npm run test`, `npm run build`, and `npm run typecheck:worker`.
+5. Verify: `npm run test`, `npm run build`, `npm run typecheck:worker`, and `npm run db:local`.
 
 Vite proxies `/api` to the local Worker at `127.0.0.1:8787`.
 
@@ -85,7 +88,7 @@ The Worker requires the D1 and Durable Object bindings declared in `wrangler.tom
 - Macro/news providers and source-trader discovery providers are not configured. The API reports these as unavailable instead of fabricating results.
 - The current scheduled queue executes market-scan tasks; it does **not** mean 162 independent AI processes are deployed. The other departments remain registered and require their own tested task handlers, provider integrations, persistence and health monitoring.
 - Backtesting currently implements one spot long-only EMA crossover research strategy, not the full multi-strategy, tick-replay, market-impact, funding or multi-exchange test suite. It does not yet model strategy-specific stops, partial fills or risk-based sizing. Backtest success never enables live trading.
-- Paper-order execution and exchange account/position reconciliation are not yet connected. The D1 schema reserves the records, but schema presence is not proof of an operational paper or live execution service.
+- Paper execution now has a separate D1-backed simulated account and position/fill ledger. It sizes spot-long entries from stop distance and the configured paper risk cap, simulates fills against visible Binance Spot order-book depth, rejects stale data, insufficient depth, excessive slippage and poor net reward/risk, and accounts for entry/exit fees. Open paper positions are checked against stop and target levels during scheduled/manual market scans. Paper entries are currently explicit API requests; the scanner does not autonomously create entries. The default USD 10,000 paper balance is simulated and is not connected to an exchange account.
 - Binance and DexScreener integrations are public read-only HTTP data sources. There is no continuous WebSocket order-book stream yet.
 - Never treat illustrative configuration defaults, missing account data or unavailable provider data as verified live facts.
 
