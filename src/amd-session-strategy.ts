@@ -13,8 +13,10 @@ export type AmdAssessment={
 
 export const DEFAULT_AMD_TIMEZONE='UTC';
 const finite=(x:number)=>Number.isFinite(x);
+const formatterCache=new Map<string,Intl.DateTimeFormat>();
 function localParts(time:number,timeZone:string){
- const p=new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(time));
+ let formatter=formatterCache.get(timeZone);if(!formatter){formatter=new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});formatterCache.set(timeZone,formatter);}
+ const p=formatter.formatToParts(new Date(time));
  const v=Object.fromEntries(p.map(x=>[x.type,x.value]));
  return {date:v.year+'-'+v.month+'-'+v.day,hour:Number(v.hour),minute:Number(v.minute),clock:v.hour+':'+v.minute};
 }
