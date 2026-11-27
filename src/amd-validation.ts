@@ -61,7 +61,7 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
  for(let i=0;i<candles.length;i++){const c=candles[i];if(![c.openTime,c.closeTime,c.open,c.high,c.low,c.close,c.volume].every(finite)||c.open<=0||c.low<=0||c.high<c.low||c.close<c.low||c.close>c.high||c.volume<0||(i>0&&c.closeTime<=candles[i-1].closeTime)){errors.push('Invalid, out-of-order, or non-monotonic candle at index '+i);break;}}
  if(errors.length)return {valid:false,errors,config,sourceCandles:candles.length,sessions:0,qualifiedSignals:0,rejectedSignals:0,trades:[],metrics:null,equityCurve:[],regimeBreakdown:[]};
  const groups=new Map<string,StrategyCandle[]>();for(const c of candles){const x=local(c,config.timezone);if(x.minute>=180&&x.minute<720){const a=groups.get(x.date)||[];a.push(c);groups.set(x.date,a);}}
- const trades:AmdReplayTrade[]=[],regimes=new Map<string,{sessions:number;trades:AmdReplayTrade[]}>();
+ const trades:AmdReplayTrade[]=[],regimes=new Map<string,{sessions:number;trades:AmdReplayTrade[]}>();let currentEquity=config.initialEquity;
  let qualifiedSignals=0,rejectedSignals=0;
  for(const [date,session] of groups){
   const acc=session.filter(c=>local(c,config.timezone).minute>=180&&local(c,config.timezone).minute<360);
@@ -90,7 +90,7 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
     const stopHit=side==='long'?c.low<=stop:c.high>=stop,targetHit=side==='long'?c.high>=target:c.low<=target;
     if(stopHit||targetHit){exit=stopHit?stop:target;exitTime=c.closeTime;exitReason=stopHit?'stop':'target';break;}
    }
-   const direction=side==='long'?1:-1,grossPnl=(exit-entry)*direction,notional=entry,roundTripCost=notional*(config.feeBps+config.slippageBps)*2/10000,netPnl=grossPnl-roundTripCost,netR=netPnl/initialRisk;
+   const direction=side==='long'?1:-1,riskAmount=currentEquity*config.riskPct/100,quantity=riskAmount/initialRisk,grossPnl=(exit-entry)*direction*quantity,roundTripCost=entry*quantity*(config.feeBps+config.slippageBps)*2/10000,netPnl=grossPnl-roundTripCost,netR=netPnl/riskAmount;currentEquity+=netPnl;
    const trade:AmdReplayTrade={sessionDate:date,side,signalTime:signal.closeTime,entryTime:next.openTime,exitTime,entry,stop,target,exit,exitReason,initialRisk,grossPnl,costs:roundTripCost,netPnl,netR,mfe,mae,mfeR:mfe/initialRisk,maeR:mae/initialRisk,barsHeld,qualification:assessment};
    trades.push(trade);bucket.trades.push(trade);entered=true;
   }
@@ -99,13 +99,15 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
  const regimeBreakdown=[...regimes.entries()].map(([key,v])=>({regime:key as 'bullish'|'bearish'|'ranging',sessions:v.sessions,trades:v.trades.length,winRatePct:v.trades.length?v.trades.filter(t=>t.netR>0).length/v.trades.length*100:0,expectancyR:average(v.trades.map(t=>t.netR)),netPnl:v.trades.reduce((s,t)=>s+t.netPnl,0)}));
  return {valid:true,errors:[],config,sourceCandles:candles.length,sessions:groups.size,qualifiedSignals,rejectedSignals,trades,metrics:summary.metrics,equityCurve:summary.equityCurve,regimeBreakdown};
 }
+function splitByLocalDays(candles:StrategyCandle[],timezone:string,ratio:number){const dates=[...new Set(candles.map(c=>local(c,timezone).date))].sort(),cut=Math.max(1,Math.min(dates.length-1,Math.floor(dates.length*ratio))),trainDates=new Set(dates.slice(0,cut));return {train:candles.filter(c=>trainDates.has(local(c,timezone).date)),test:candles.filter(c=>!trainDates.has(local(c,timezone).date))};}
 export type AmdOptimisationCandidate={config:AmdValidationConfig;train:AmdMetrics;holdout:AmdMetrics;score:number;robust:boolean};
 export function optimiseAmdParameters(candles:StrategyCandle[],options:{timezones?:string[];sweepSensitivitiesBps?:number[];arrayStrengths?:number[];minTrainTrades?:number;minHoldoutTrades?:number}={}){
  const timezones=[...new Set(options.timezones??[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London','America/New_York'])].slice(0,6);
  const sweeps=options.sweepSensitivitiesBps??[0,3,5,10],strengths=options.arrayStrengths??[65,70,75,80];
- const split=Math.floor(candles.length*.7),trainCandles=candles.slice(0,split),holdoutCandles=candles.slice(split),candidates:AmdOptimisationCandidate[]=[];
+ const candidates:AmdOptimisationCandidate[]=[];
  for(const timezone of timezones)for(const sweep of sweeps)for(const strength of strengths){
   const config={...DEFAULT_AMD_VALIDATION_CONFIG,timezone,sweepSensitivityBps:sweep,minArrayStrength:strength};
+  const dates=[...new Set(candles.map(c=>local(c,timezone).date))].sort(),cut=Math.max(1,Math.min(dates.length-1,Math.floor(dates.length*.7))),trainDates=new Set(dates.slice(0,cut)),trainCandles=candles.filter(c=>trainDates.has(local(c,timezone).date)),holdoutCandles=candles.filter(c=>!trainDates.has(local(c,timezone).date));
   const train=replayAmdSessions(trainCandles,config),holdout=replayAmdSessions(holdoutCandles,config);
   if(!train.valid||!holdout.valid||!train.metrics||!holdout.metrics)continue;
   const minTrain=options.minTrainTrades??20,minHold=options.minHoldoutTrades??8;
@@ -115,17 +117,18 @@ export function optimiseAmdParameters(candles:StrategyCandle[],options:{timezone
  }
  candidates.sort((a,b)=>b.score-a.score);
  const best=candidates[0]??null;
- return {valid:!!best,candidateCount:candidates.length,split:{trainCandles:trainCandles.length,holdoutCandles:holdoutCandles.length,holdoutUntouchedDuringSelection:true},best,top:candidates.slice(0,10),warnings:best?.robust?[]:['No candidate passed minimum sample and positive holdout expectancy robustness checks; do not promote a configuration']};
+ return {valid:!!best,candidateCount:candidates.length,split:{method:'chronological local-session-date boundary per candidate timezone',holdoutUntouchedDuringSelection:true},best,top:candidates.slice(0,10),warnings:best?.robust?[]:['No candidate passed minimum sample and positive holdout expectancy robustness checks; do not promote a configuration']};
 }
 export function walkForwardAmd(candles:StrategyCandle[],folds=4){
  const n=clamp(Math.floor(folds),2,8),results:{fold:number;trainCandles:number;testCandles:number;selected:AmdValidationConfig|null;train:AmdMetrics|null;test:AmdMetrics|null;passed:boolean}[]=[];
- const chunk=Math.floor(candles.length/(n+1));
- for(let i=0;i<n;i++){const trainEnd=chunk*(i+1),testEnd=Math.min(candles.length,trainEnd+chunk),train=candles.slice(0,trainEnd),test=candles.slice(trainEnd,testEnd);
+ const timezone=DEFAULT_AMD_TIMEZONE,{train:allTrain,test:finalTest}=splitByLocalDays(candles,timezone,.8);
+ const dates=[...new Set(allTrain.map(c=>local(c,timezone).date))].sort(),chunk=Math.max(1,Math.floor(dates.length/(n+1)));
+ for(let i=0;i<n;i++){const trainEnd=chunk*(i+1),testEnd=Math.min(dates.length,trainEnd+chunk),trainDates=new Set(dates.slice(0,trainEnd)),testDates=new Set(dates.slice(trainEnd,testEnd)),train=allTrain.filter(c=>trainDates.has(local(c,timezone).date)),test=allTrain.filter(c=>testDates.has(local(c,timezone).date));
   const opt=optimiseAmdParameters(train,{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London'],sweepSensitivitiesBps:[0,5,10],arrayStrengths:[65,75,85],minTrainTrades:8,minHoldoutTrades:3});
   const selected=opt.best?.config??null,validation=selected?replayAmdSessions(test,selected):null,trainResult=selected?replayAmdSessions(train,selected):null;
   results.push({fold:i+1,trainCandles:train.length,testCandles:test.length,selected,train:trainResult?.metrics??null,test:validation?.metrics??null,passed:!!validation?.metrics&&validation.metrics.trades>=3&&validation.metrics.expectancyR>0});
  }
- const used=Math.max(0,chunk*n),finalTest=candles.slice(used),finalOpt=optimiseAmdParameters(candles.slice(0,used),{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London'],sweepSensitivitiesBps:[0,5,10],arrayStrengths:[65,75,85],minTrainTrades:8,minHoldoutTrades:3});
+ const finalOpt=optimiseAmdParameters(allTrain,{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London'],sweepSensitivitiesBps:[0,5,10],arrayStrengths:[65,75,85],minTrainTrades:8,minHoldoutTrades:3});
  const finalResult=finalOpt.best?replayAmdSessions(finalTest,finalOpt.best.config):null;
  return {valid:results.length===n&&results.every(x=>x.test!==null),folds:results,aggregate:{folds:n,passedFolds:results.filter(x=>x.passed).length,meanTestExpectancyR:average(results.map(x=>x.test?.expectancyR??0)),meanTestWinRatePct:average(results.map(x=>x.test?.winRatePct??0))},finalUntouchedOutOfSample:{candles:finalTest.length,selectedConfig:finalOpt.best?.config??null,metrics:finalResult?.metrics??null,passed:!!finalResult?.metrics&&finalResult.metrics.trades>=8&&finalResult.metrics.expectancyR>0},liveExecutionEnabled:false};
 }
