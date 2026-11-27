@@ -1,7 +1,8 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles,platformServices} from './departments';
-import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio,netReward} from './intelligence';
+import {evaluateIntegratedOpportunity,monteCarloRisk,stressPortfolio,netReward,signalDecision} from './intelligence';
+import {defaultRisk} from './engine';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,agentTrustScore,defaultCapitalPolicy,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
@@ -65,4 +66,8 @@ describe('net trade economics',()=>{
 describe('performance data integrity',()=>{
  it('prevents invalid performance metrics from qualifying',()=>{const r=classifyPerformance({netPnl:Number.NaN,grossProfit:30,grossLoss:10,maxDrawdownPct:5,trades:300,expectancy:1,executionSlippageBps:2,signalCalibrationError:.1,regimeStable:true,dataReliable:true});expect(r.status).toBe('probation-or-restricted');expect(r.failures).toContain('invalid or incomplete performance metrics');});
  it('returns zero trust for invalid task counters',()=>expect(agentTrustScore({successfulTasks:10,failedTasks:-1,policyViolations:0,dataErrors:0,decisionReversals:0})).toBe(0));
+});
+
+describe('legacy signal helper cannot bypass central authority',()=>{
+ it('rejects legacy signals without entry stop target and cost economics',()=>{const agent={id:1,name:'trend',division:'Market Intelligence',strategy:'trend',symbol:'BTCUSDT',timeframe:'1m',status:'READY' as const,confidence:90,trades:100,winRate:60,pnl:100,risk:.2};const signal={id:1,time:'now',symbol:'BTCUSDT',side:'LONG' as const,strategy:'trend',confidence:90,agent:'trend',status:'WATCH' as const};const r=signalDecision(signal,agent,healthy,defaultRisk,.2);expect(r.approved).toBe(false);expect(r.reasons).toContain('net reward/risk economics unacceptable');});
 });
