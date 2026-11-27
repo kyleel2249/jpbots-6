@@ -500,7 +500,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(enabled){
    const raw=await env.KV_BINDING.get('global-market:universe:v1').catch(()=>null);
    try{const snapshot=raw?JSON.parse(raw):null,rows=Array.isArray(snapshot?.opportunities)?snapshot.opportunities:[],eligible=rows.filter((x:any)=>x.instrument?.assetClass==='crypto-spot'&&x.instrument?.venue==='Binance Spot'&&Number(x.instrument?.observedAt)>=now-20*60*1000&&Number(x.score)>=18).sort((a:any,b:any)=>Number(b.score)-Number(a.score));
-    const picked=eligible[0]?.instrument;if(picked&&/^[A-Z0-9]{5,20}$/.test(String(picked.symbol||''))){symbol=String(picked.symbol);source='global-market-universe';assignmentStatus='ASSIGNED';}
+    const fallback=(snapshot?.instruments||[]).filter((x:any)=>x.assetClass==='crypto-spot'&&x.venue==='Binance Spot'&&x.tradable!==false&&Number(x.observedAt)>=now-20*60*1000).sort((a:any,b:any)=>Number(b.volume24hUsd||0)-Number(a.volume24hUsd||0))[0];const picked=eligible[0]?.instrument??fallback;if(picked&&/^[A-Z0-9]{5,20}$/.test(String(picked.symbol||''))){symbol=String(picked.symbol);source='global-market-universe';assignmentStatus='ASSIGNED';}
    }catch{}
   }
   const timeframe=role.departmentId==='scalp'?'1m/3m/5m':role.departmentId==='day'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME';
@@ -509,8 +509,8 @@ async function route(request:Request,env:Env):Promise<Response>{
    env.DB.prepare("INSERT INTO agent_assignments(role_id,division_id,symbol,timeframe,status,assignment_source,assigned_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET division_id=excluded.division_id,symbol=excluded.symbol,timeframe=excluded.timeframe,status=excluded.status,assignment_source=excluded.assignment_source,assigned_at=excluded.assigned_at,updated_at=excluded.updated_at").bind(roleId,divisionId,symbol,timeframe,assignmentStatus,source,enabled?now:null,now),
    env.DB.prepare("INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)").bind(uuid(),enabled?'agent.activated':'agent.deactivated','operator',now,JSON.stringify({roleId,divisionId,symbol,status:assignmentStatus}))
   ]);
-  if(role.departmentId==='scalp'&&role.name==='Scalping Market Scanner')await env.DB.prepare('UPDATE trading_divisions SET enabled=?,updated_at=? WHERE division_id=?').bind(enabled?1:0,now,'scalping').run();
-  if(role.departmentId==='day'&&role.name==='Intraday Market Scanner')await env.DB.prepare('UPDATE trading_divisions SET enabled=?,updated_at=? WHERE division_id=?').bind(enabled?1:0,now,'day-trading').run();
+  if(role.departmentId==='scalp'&&role.name==='Scalping Market Scanner')await env.DB.prepare('UPDATE trading_divisions SET enabled=?,updated_at=? WHERE division_id=?').bind(enabled&&assignmentStatus==='ASSIGNED'?1:0,now,'scalping').run();
+  if(role.departmentId==='day'&&role.name==='Intraday Market Scanner')await env.DB.prepare('UPDATE trading_divisions SET enabled=?,updated_at=? WHERE division_id=?').bind(enabled&&assignmentStatus==='ASSIGNED'?1:0,now,'day-trading').run();
   return json({ok:true,roleId,enabled,divisionId,symbol,timeframe,status:assignmentStatus,tradeExecution:'paper-only; subject to adaptive and capital risk approval',liveTradingEnabled:false});
  }
  if(path==='/api/agent-tasks'&&request.method==='GET'){const requested=Number(url.searchParams.get('limit')||100),limit=Number.isFinite(requested)?Math.min(500,Math.max(1,requested)):100;const rows=await env.DB.prepare('SELECT id,role_id,task_type,status,created_at,updated_at,payload_json,result_json FROM agent_tasks ORDER BY created_at DESC LIMIT ?').bind(limit).all();return json({tasks:rows.results});}
@@ -785,7 +785,7 @@ export class AgentOrchestrator {
      const candles=raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
      const trades=(bundle.book.trades??[]).filter((t):t is {price:number;quantity:number;aggressor:'buy'|'sell';timestamp:number}=>t.aggressor==='buy'||t.aggressor==='sell');
      const analysis=analyseInstitutionalMarket({symbol:task.symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades}),analysisId=uuid(),createdAt=Date.now();
-     const roleTasks=analysis.findings.map(f=>({id:uuid(),kind:'institutional-role' as const,symbol:task.symbol,createdAt,roleId:'institutional:'+f.agent,correlationId:analysisId,payload:f}));
+     const enabledRows=await this.env.DB.prepare("SELECT role_id FROM agent_state WHERE enabled=1 AND role_id LIKE 'institutional:%'").all<any>(),enabledRoleIds=new Set(enabledRows.results.map((x:any)=>String(x.role_id)));const roleTasks=analysis.findings.filter(f=>enabledRoleIds.has('institutional:'+f.agent)).map(f=>({id:uuid(),kind:'institutional-role' as const,symbol:task.symbol,createdAt,roleId:'institutional:'+f.agent,correlationId:analysisId,payload:f}));
      if(queue.length+roleTasks.length>500)throw new Error('Durable task queue capacity reached; institutional scan deferred');
      await this.env.DB.batch([
       this.env.DB.prepare('INSERT INTO institutional_analyses(analysis_id,symbol,observed_at,source,result_json) VALUES(?,?,?,?,?)').bind(analysisId,task.symbol,createdAt,'Binance Spot public REST scheduled scan',JSON.stringify(analysis)),
