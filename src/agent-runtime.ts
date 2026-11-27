@@ -49,6 +49,7 @@ export function parseCouncilFindings(value: unknown, roles: Role[], model: strin
       errors.push('response contains a duplicate specialist role: ' + item.roleName);
       continue;
     }
+    seen.add(item.roleName);
     if (!stances.has(item.stance) || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 100 || typeof item.reason !== 'string' || !item.reason.trim()) {
       errors.push('invalid finding fields for ' + item.roleName);
       continue;
@@ -60,7 +61,7 @@ export function parseCouncilFindings(value: unknown, roles: Role[], model: strin
     seen.add(item.roleName);
     findings.push({ roleName: item.roleName, stance: item.stance, confidence: item.confidence, reason: item.reason.trim().slice(0, 600), hardBlock: item.hardBlock === true });
   }
-  const missingRoles = roles.map((role) => role.name).filter((name) => !seen.has(name));
+  const missingRoles = roles.map((role) => role.name).filter((name) => !findings.some((finding) => finding.roleName === name));
   if (missingRoles.length) errors.push('model omitted ' + missingRoles.length + ' specialist role findings');
   return { valid: errors.length === 0, findings, missingRoles, errors, model, promptVersion: 'department-council-v1' };
 }
