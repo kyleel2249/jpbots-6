@@ -24,6 +24,7 @@ interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespa
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+const operatorAuthorized=(request:Request,env:Env)=>!!env.OPERATOR_API_TOKEN&&request.headers.get('authorization')==='Bearer '+env.OPERATOR_API_TOKEN;
 const cors=(response:Response)=>{const h=new Headers(response.headers);h.set('access-control-allow-origin','*');h.set('access-control-allow-methods','GET,POST,OPTIONS');h.set('access-control-allow-headers','content-type,authorization');return new Response(response.body,{status:response.status,headers:h});};
 const uuid=()=>crypto.randomUUID();
 const binance=(env:Env)=> (env.BINANCE_BASE_URL||'https://data-api.binance.vision').replace(/\/$/,'');
@@ -296,6 +297,7 @@ async function route(request:Request,env:Env):Promise<Response>{
  if(closeMatch&&request.method==='POST'){const position=await env.DB.prepare("SELECT * FROM paper_positions WHERE position_id=?").bind(closeMatch[1]).first<any>();if(!position||position.status!=='open')return json({error:'Open paper position not found'},404);const bundle=await marketBundle(env,String(position.symbol));const body=await request.json().catch(()=>({})) as any;const reason=typeof body.reason==='string'?body.reason.slice(0,80):'operator-close';const result=await closePaperPosition(env,position,bundle.book,reason);return json(result,result.closed?200:409);}
  if(path==='/api/portfolio'&&request.method==='GET'){const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return json({configured:!!row,reconciled:row?.reconciled===1,account:row?{equity:row.equity,peakEquity:row.peak_equity,dailyLossPct:row.daily_loss_pct,weeklyLossPct:row.weekly_loss_pct,monthlyLossPct:row.monthly_loss_pct,openPositions:row.open_positions,leverage:row.leverage,marginUtilisationPct:row.margin_utilisation_pct}:null,liveTradingEnabled:false});}
  if(path==='/api/amd/replay'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30);
   if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<1||days>60)return json({error:'Valid symbol and 1–60 day history window are required'},400);
   const candles=await fetchAmdHistory(env,symbol,days),config={...({} as AmdValidationConfig),...(body.config||{}),timezone:String(body.timezone||body.config?.timezone||env.AMD_SESSION_TIMEZONE||'UTC')},result=replayAmdSessions(candles,config);
@@ -304,6 +306,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
  }
  if(path==='/api/amd/optimise'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30);
   if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<10||days>60)return json({error:'Valid symbol and 10–60 day history window are required for optimisation'},400);
   const candles=await fetchAmdHistory(env,symbol,days),result=optimiseAmdParameters(candles,{timezones:Array.isArray(body.timezones)?body.timezones.slice(0,6):[env.AMD_SESSION_TIMEZONE||'UTC','Africa/Accra','Europe/London'],sweepSensitivitiesBps:Array.isArray(body.sweepSensitivitiesBps)?body.sweepSensitivitiesBps.slice(0,6):[0,5,10],arrayStrengths:Array.isArray(body.arrayStrengths)?body.arrayStrengths.slice(0,6):[65,75,85]});
@@ -311,6 +314,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
  }
  if(path==='/api/amd/walk-forward'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30),folds=Number(body.folds??3);
   if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<15||days>60||!Number.isInteger(folds)||folds<2||folds>5)return json({error:'Walk-forward requires a valid symbol, 15–60 days and 2–5 folds'},400);
   const candles=await fetchAmdHistory(env,symbol,days),result=walkForwardAmd(candles,folds);
@@ -318,6 +322,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
  }
  if(path==='/api/amd/forward/run'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid symbol'},400);
   return json(await runAmdForwardScan(env,symbol));
