@@ -5,7 +5,7 @@ export interface MarketEvidence {
   symbol:string; assetClass:string; price:number; direction:Direction; scalpingDirection?:Direction; dayTradingDirection?:Direction; scalpingOrderBookImbalance?:number; dayTradingOrderBookImbalance?:number; dayTradingTrendAlignment?:number; observedAt:number;
   spreadBps:number; estimatedRoundTripCostBps:number; volatilityPct:number; volumeRatio:number;
   trendAlignment:number; orderBookImbalance:number; liquidityUsd:number; atrPct:number;
-  dataAgeMs:number; sessionEligible:boolean; fvg:boolean; liquiditySweep:boolean;
+  dataAgeMs:number; sessionEligible:boolean; scalpingAtrPct?:number; dayTradingAtrPct?:number; fvg:boolean; liquiditySweep:boolean;
   marketStructureShift:boolean; vwapAligned:boolean; fundingExtreme?:boolean;
 }
 export interface DivisionPolicy {
@@ -24,7 +24,7 @@ export interface AdaptiveDecision {
   liveTradingEnabled:false;
 }
 export const DEFAULT_DIVISION_POLICIES:Record<TradingDivision,DivisionPolicy>={
-  scalping:{allocationUsd:2,maxRiskPerTradePct:0.35,maxDailyLossPct:1.5,maxOpenPositions:2,minScore:72,maxSpreadBps:8,maxRoundTripCostBps:14,minLiquidityUsd:25000},
+  scalping:{allocationUsd:2,maxRiskPerTradePct:0.35,maxDailyLossPct:1.5,maxOpenPositions:2,minScore:72,maxSpreadBps:8,maxRoundTripCostBps:32,minLiquidityUsd:25000},
   'day-trading':{allocationUsd:3,maxRiskPerTradePct:0.5,maxDailyLossPct:2,maxOpenPositions:3,minScore:70,maxSpreadBps:18,maxRoundTripCostBps:28,minLiquidityUsd:10000}
 };
 const clamp=(n:number,min=0,max=100)=>Math.max(min,Math.min(max,n));
