@@ -44,7 +44,7 @@ export function validateOrder(o:{market:'spot'|'margin'|'usdt-m'|'coin-m'|'usdc-
 
 import {analyseOrderBook,authorizeTrade,type CapitalState,type Evidence,type BotGuardInput,type OrderBookSnapshot} from './shared-services';
 /** Joins validated market snapshots, live depth/trade flow, agent debate and the final capital veto. Timestamps must use the same unit. */
-export function evaluateIntegratedOpportunity(input:{market:Snapshot;book:OrderBookSnapshot;evidence:Evidence[];capital:CapitalState;signalValid:boolean;economicsValid:boolean;exchangeHealthy:boolean;maxAgeMs:number;now:number;scalping?:BotGuardInput}){
+export function evaluateIntegratedOpportunity(input:{market:Snapshot;book:OrderBookSnapshot;evidence:Evidence[];capital:CapitalState;signalValid:boolean;economicsValid:boolean;exchangeHealthy:boolean;proposedRiskPct:number;maxAgeMs:number;now:number;scalping?:BotGuardInput}){
  const market=buildMarketReport(input.market),depth=analyseOrderBook(input.book);
  const marketFresh=input.now-input.market.timestamp<=input.maxAgeMs&&input.now-input.book.timestamp<=input.maxAgeMs&&input.now>=input.market.timestamp&&input.now>=input.book.timestamp;
  const orderFlowStance:Evidence['stance']=depth.obi>.08&&depth.tbi>.08?'bullish':depth.obi<-.08&&depth.tbi<-.08?'bearish':'neutral';
