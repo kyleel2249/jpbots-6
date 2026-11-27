@@ -3,7 +3,7 @@
 // Never accept credentials supplied by the browser; inject the Pages secret server-side.
 type PagesEnv={API_WORKER?:{fetch(request:Request):Promise<Response>};OPERATOR_API_TOKEN?:string};
 type PagesContext={request:Request;env:PagesEnv};
-const protectedPath=(pathname:string)=>pathname.startsWith('/api/amd/')||pathname==='/api/intelligence/advanced'||pathname==='/api/intelligence/predictive'||pathname==='/api/intelligence/replay'||pathname==='/api/intelligence/recovery'||pathname==='/api/institutional/strategy/run'||pathname==='/api/agents/analyse'||pathname==='/api/operator/status';
+const protectedPath=(pathname:string)=>pathname.startsWith('/api/amd/')||pathname==='/api/intelligence/advanced'||pathname==='/api/intelligence/predictive'||pathname==='/api/intelligence/replay'||pathname==='/api/intelligence/recovery'||pathname==='/api/intelligence/liquidations/ingest'||pathname==='/api/institutional/strategy/run'||pathname==='/api/agents/analyse'||pathname==='/api/operator/status';
 export const onRequest=async(context:PagesContext):Promise<Response>=>{
  const {request,env}=context,binding=env.API_WORKER;
  if(!binding)return new Response(JSON.stringify({ok:false,error:'Backend service binding API_WORKER is not configured',code:'BACKEND_BINDING_MISSING'}),{status:503,headers:{'content-type':'application/json','cache-control':'no-store'}});
