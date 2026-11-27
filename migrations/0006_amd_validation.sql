@@ -27,3 +27,14 @@ CREATE TABLE IF NOT EXISTS amd_forward_opportunities (
 );
 CREATE INDEX IF NOT EXISTS idx_amd_forward_symbol_time ON amd_forward_opportunities(symbol,observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_amd_forward_status_time ON amd_forward_opportunities(status,observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS amd_paper_session_locks (
+  symbol TEXT NOT NULL,
+  session_date TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('reserved','opened','failed')),
+  lease_until INTEGER NOT NULL,
+  position_id TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(symbol,session_date)
+);
+CREATE INDEX IF NOT EXISTS idx_amd_paper_session_lock_state ON amd_paper_session_locks(state,lease_until);
