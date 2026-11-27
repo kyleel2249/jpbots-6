@@ -63,7 +63,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     volatilityPct:atrPct(one),volumeRatio:baseline>0?recent/baseline:0,
     trendAlignment:scalpDirection==='long'?1:scalpDirection==='short'?-1:0,
     orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:atrPct(five),scalpingAtrPct:atrPct(one),dayTradingAtrPct:atrPct(five),
-    dataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
+    dataAgeMs:Math.max(0,now-book.timestamp),scalpingDataAgeMs:book.trades?.length?Math.max(0,now-Math.max(...book.trades.map(t=>t.timestamp))):Number.MAX_SAFE_INTEGER,dayTradingDataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
     fvg:dayFvg||longFvg||shortFvg,liquiditySweep:daySweep||scalpSweep,
     marketStructureShift:(dayDirection==='long'&&five.at(-1)!.close>Math.max(...five.slice(-12,-1).map(c=>c.high)))||(dayDirection==='short'&&five.at(-1)!.close<Math.min(...five.slice(-12,-1).map(c=>c.low))),
     vwapAligned,fundingExtreme:false
