@@ -29,7 +29,7 @@ interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>;get(key:string):Promise<string|null>;delete(key:string):Promise<void>};
 interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; LLM_API_KEYS?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_PAPER_FORWARD_ENABLED?:string; AMD_SESSION_TIMEZONE?:string; TWELVEDATA_API_KEY?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
-type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan'|'global-market-scan'|'adaptive-division-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
+type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan'|'amd-forward-scan'|'global-market-scan'|'adaptive-division-scan'|'division-position-monitor';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 type LlmKeyConfig={baseUrl:string;apiKey:string;model:string};
 function configuredLlmKeys(raw?:string):LlmKeyConfig[]{if(!raw)return[];try{const parsed=JSON.parse(raw);if(!Array.isArray(parsed))return[];return parsed.slice(0,5).filter((x:any)=>typeof x?.baseUrl==='string'&&/^https:\/\//.test(x.baseUrl)&&typeof x.apiKey==='string'&&x.apiKey.length>=16&&typeof x.model==='string').map((x:any)=>({baseUrl:x.baseUrl.replace(/\/$/,''),apiKey:x.apiKey,model:x.model}));}catch{return[];}}
@@ -352,6 +352,26 @@ async function reconcileDivisionPaperAccounts(env:Env){
  return {checked:rows.results.length,repaired:repairs.length,repairs};
 }
 
+
+async function monitorDivisionPositionsForSymbol(env:Env,symbol:string,book:OrderBookSnapshot){
+ const open=await env.DB.prepare("SELECT * FROM division_paper_positions WHERE symbol=? AND status='open'").bind(symbol).all<any>(),monitor:any[]=[];
+ for(const position of open.results){
+  const entry=Number(position.entry_price),riskDistance=entry-Number(position.stop_price),payload=JSON.parse(String(position.payload_json||'{}')),feeBps=Number.isFinite(payload.feeBps)?Number(payload.feeBps):10;
+  if(riskDistance>0&&book.mid>=entry+riskDistance&&Number(position.stop_price)<entry){
+   const breakEven=entry*(1+feeBps/10000),moved=await env.DB.prepare("UPDATE division_paper_positions SET stop_price=? WHERE position_id=? AND status='open' AND stop_price<?").bind(breakEven,position.position_id,breakEven).run();
+   if(Number(moved.meta?.changes??0)===1){position.stop_price=breakEven;monitor.push({positionId:position.position_id,action:'break-even-stop-raised',stopPrice:breakEven});}
+  }
+  const reason=book.mid<=Number(position.stop_price)?'stop-loss':book.mid>=Number(position.target_price)?'take-profit':null;
+  if(reason)monitor.push(await closeDivisionPaperPosition(env,position,book,reason));
+ }
+ return monitor;
+}
+async function runDivisionPositionMonitor(env:Env){
+ const rows=await env.DB.prepare("SELECT DISTINCT symbol FROM division_paper_positions WHERE status='open' ORDER BY symbol LIMIT 20").all<any>(),results:any[]=[];
+ for(const row of rows.results){const symbol=String(row.symbol);try{const bundle=await marketBundle(env,symbol);results.push({symbol,actions:await monitorDivisionPositionsForSymbol(env,symbol,bundle.book)});}catch(error){results.push({symbol,error:String(error).slice(0,200)});}}
+ return {observedAt:Date.now(),symbols:rows.results.length,results,liveTradingEnabled:false};
+}
+
 async function runAdaptiveDivisionScan(env:Env){
  const now=Date.now(),reconciliation=await reconcileDivisionPaperAccounts(env),master=await getPaperAccount(env),divisionRows=await env.DB.prepare('SELECT * FROM trading_divisions WHERE enabled=1 ORDER BY division_id').all<any>();
  const policies:Partial<Record<TradingDivision,DivisionPolicy>>={},accounts:Record<string,any>={};
@@ -368,16 +388,7 @@ async function runAdaptiveDivisionScan(env:Env){
    const [oneRaw,fiveRaw,hourRaw]=await Promise.all(['1m','5m','1h'].map(interval=>getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=120')));
    const convert=(rows:Kline[])=>rows.map(k=>({openTime:Number(k[0]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5]),closeTime:Number(k[6])})).filter(x=>x.closeTime<now);
    const evidence=buildDivisionMarketEvidence({symbol,assetClass:'crypto-spot',candles1m:convert(oneRaw),candles5m:convert(fiveRaw),candles1h:convert(hourRaw),book:bundle.book,observedAt:now,feeBps:10});
-   const open=await env.DB.prepare("SELECT * FROM division_paper_positions WHERE symbol=? AND status='open'").bind(symbol).all<any>(),monitor=[];
-   for(const position of open.results){
-    const entry=Number(position.entry_price),riskDistance=entry-Number(position.stop_price),payload=JSON.parse(String(position.payload_json||'{}')),feeBps=Number.isFinite(payload.feeBps)?Number(payload.feeBps):10;
-    if(riskDistance>0&&bundle.book.mid>=entry+riskDistance&&Number(position.stop_price)<entry){
-     const breakEven=entry*(1+feeBps/10000),moved=await env.DB.prepare("UPDATE division_paper_positions SET stop_price=? WHERE position_id=? AND status='open' AND stop_price<?").bind(breakEven,position.position_id,breakEven).run();
-     if(Number(moved.meta?.changes??0)===1){position.stop_price=breakEven;monitor.push({positionId:position.position_id,action:'break-even-stop-raised',stopPrice:breakEven});}
-    }
-    const reason=bundle.book.mid<=Number(position.stop_price)?'stop-loss':bundle.book.mid>=Number(position.target_price)?'take-profit':null;
-    if(reason)monitor.push(await closeDivisionPaperPosition(env,position,bundle.book,reason));
-   }
+   const monitor=await monitorDivisionPositionsForSymbol(env,symbol,bundle.book);
    if(!candidate){results.push({symbol,monitored:monitor});continue;}
    const decision=evaluateAdaptiveTrading(evidence,{totalCapitalUsd:totalCapital,policies}),decisionId=uuid();
    await env.DB.prepare('INSERT INTO adaptive_trading_decisions(decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json,live_trading_enabled) VALUES(?,?,?,?,?,?,?,0)').bind(decisionId,symbol,now,decision.mode,JSON.stringify(decision.selected),JSON.stringify({scalping:decision.scalping,dayTrading:decision.dayTrading}),JSON.stringify(decision.rationale)).run();
@@ -744,6 +755,9 @@ export class AgentOrchestrator {
      queue.push(...roleTasks);
      await this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify({analysisId,roleTasks:roleTasks.length}),task.id).run();
      await audit(this.env,'institutional.scheduled.scan.completed','institutional-intelligence-engine',{analysisId,symbol:task.symbol,roleTasks:roleTasks.length});
+    }else if(task.kind==='division-position-monitor'){
+     const result=await runDivisionPositionMonitor(this.env);
+     await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'risk:division-position-monitor','division-position-monitor',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='adaptive-division-scan'){
      const result=await runAdaptiveDivisionScan(this.env);
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,'completed',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'adaptive:division-arbitrator','adaptive-division-scan',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
