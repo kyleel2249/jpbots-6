@@ -273,6 +273,10 @@ export class AgentOrchestrator {
  async alarm():Promise<void>{
   const queue=await this.state.storage.get<Task[]>('queue')??[],batch=queue.splice(0,3);let processed=0,nextDelay=1000;
   for(const task of batch){try{
+    await this.env.DB.batch([
+     this.env.DB.prepare("INSERT OR REPLACE INTO agent_task_leases(task_id,owner,lease_until,heartbeat_at,attempts) VALUES(?,?,?,?,?)").bind(task.id,this.state.id.toString(),Date.now()+30_000,Date.now(),task.attempts??0),
+     this.env.DB.prepare("UPDATE agent_tasks SET status='running',updated_at=? WHERE id=?").bind(Date.now(),task.id)
+    ]);
     if(task.kind==='market-scan'){
      const result=await runMarketScan(this.env,task.symbol);
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
@@ -297,12 +301,13 @@ export class AgentOrchestrator {
       await this.env.DB.prepare("INSERT INTO agent_messages(message_id,correlation_id,from_role,to_role,message_type,created_at,payload_json) VALUES(?,?,?,?,?,?,?)").bind(uuid(),task.correlationId,'institutional:supervisor','paper-strategy-workflow','supervisor.decision',Date.now(),JSON.stringify(decision)).run();
      }
     }else throw new Error('Unsupported or malformed runtime task');
+    await this.env.DB.prepare('DELETE FROM agent_task_leases WHERE task_id=?').bind(task.id).run();
     processed++;
   }catch(error){
     const attempts=(task.attempts??0)+1,message=String(error);
     await this.state.storage.put('lastError',message);
-    if(attempts<3){queue.push({...task,attempts});nextDelay=Math.max(nextDelay,1000*2**attempts);await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','retrying',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();}
-    else await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','failed',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();
+    if(attempts<3){queue.push({...task,attempts});nextDelay=Math.max(nextDelay,1000*2**attempts);await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,task.roleId??'market:Market Data Intelligence',task.kind, 'retrying',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();}
+    else await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,task.roleId??'market:Market Data Intelligence',task.kind,'failed',task.createdAt,Date.now(),JSON.stringify({...task,attempts}),JSON.stringify({error:message,attempts})).run();
   }}
   await this.state.storage.put('queue',queue);await this.state.storage.put('lastProcessedAt',Date.now());await this.state.storage.put('processedCount',(await this.state.storage.get<number>('processedCount')??0)+processed);if(queue.length)await this.state.storage.setAlarm(Date.now()+nextDelay);
  }
