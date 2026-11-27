@@ -295,6 +295,42 @@ async function route(request:Request,env:Env):Promise<Response>{
  const closeMatch=path.match(/^\/api\/paper\/positions\/([a-f0-9-]+)\/close$/i);
  if(closeMatch&&request.method==='POST'){const position=await env.DB.prepare("SELECT * FROM paper_positions WHERE position_id=?").bind(closeMatch[1]).first<any>();if(!position||position.status!=='open')return json({error:'Open paper position not found'},404);const bundle=await marketBundle(env,String(position.symbol));const body=await request.json().catch(()=>({})) as any;const reason=typeof body.reason==='string'?body.reason.slice(0,80):'operator-close';const result=await closePaperPosition(env,position,bundle.book,reason);return json(result,result.closed?200:409);}
  if(path==='/api/portfolio'&&request.method==='GET'){const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return json({configured:!!row,reconciled:row?.reconciled===1,account:row?{equity:row.equity,peakEquity:row.peak_equity,dailyLossPct:row.daily_loss_pct,weeklyLossPct:row.weekly_loss_pct,monthlyLossPct:row.monthly_loss_pct,openPositions:row.open_positions,leverage:row.leverage,marginUtilisationPct:row.margin_utilisation_pct}:null,liveTradingEnabled:false});}
+ if(path==='/api/amd/replay'&&request.method==='POST'){
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<1||days>60)return json({error:'Valid symbol and 1–60 day history window are required'},400);
+  const candles=await fetchAmdHistory(env,symbol,days),config={...({} as AmdValidationConfig),...(body.config||{}),timezone:String(body.timezone||body.config?.timezone||env.AMD_SESSION_TIMEZONE||'UTC')},result=replayAmdSessions(candles,config);
+  if(!result.valid)return json({error:'AMD replay validation failed',reasons:result.errors},422);
+  const runId=await saveAmdValidation(env,symbol,'replay',result.config,result,result.metrics);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/optimise'&&request.method==='POST'){
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<10||days>60)return json({error:'Valid symbol and 10–60 day history window are required for optimisation'},400);
+  const candles=await fetchAmdHistory(env,symbol,days),result=optimiseAmdParameters(candles,{timezones:Array.isArray(body.timezones)?body.timezones.slice(0,6):[env.AMD_SESSION_TIMEZONE||'UTC','Africa/Accra','Europe/London'],sweepSensitivitiesBps:Array.isArray(body.sweepSensitivitiesBps)?body.sweepSensitivitiesBps.slice(0,6):[0,5,10],arrayStrengths:Array.isArray(body.arrayStrengths)?body.arrayStrengths.slice(0,6):[65,75,85]});
+  const runId=await saveAmdValidation(env,symbol,'optimisation',body,result,result.best);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/walk-forward'&&request.method==='POST'){
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase(),days=Number(body.days??30),folds=Number(body.folds??3);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<15||days>60||!Number.isInteger(folds)||folds<2||folds>5)return json({error:'Walk-forward requires a valid symbol, 15–60 days and 2–5 folds'},400);
+  const candles=await fetchAmdHistory(env,symbol,days),result=walkForwardAmd(candles,folds);
+  const runId=await saveAmdValidation(env,symbol,'walk-forward',{days,folds},result,result.aggregate);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/forward/run'&&request.method==='POST'){
+  const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid symbol'},400);
+  return json(await runAmdForwardScan(env,symbol));
+ }
+ if(path==='/api/amd/forward'&&request.method==='GET'){
+  const symbol=url.searchParams.get('symbol'),status=url.searchParams.get('status'),requested=Number(url.searchParams.get('limit')||100),limit=Number.isFinite(requested)?Math.min(500,Math.max(1,requested)):100;
+  const rows=await env.DB.prepare('SELECT opportunity_id,symbol,session_date,observed_at,phase,status,direction,reason_json,assessment_json,arbitration_json,paper_order_attempted,created_at FROM amd_forward_opportunities WHERE (? IS NULL OR symbol=?) AND (? IS NULL OR status=?) ORDER BY observed_at DESC LIMIT ?').bind(symbol,symbol,status,status,limit).all<any>();
+  return json({opportunities:rows.results.map(r=>({...r,reason:JSON.parse(r.reason_json),assessment:JSON.parse(r.assessment_json),arbitration:r.arbitration_json?JSON.parse(r.arbitration_json):null})),liveExecutionEnabled:false});
+ }
+ if(path==='/api/amd/validation/runs'&&request.method==='GET'){
+  const symbol=url.searchParams.get('symbol'),rows=await env.DB.prepare('SELECT run_id,symbol,run_type,strategy_version,started_at,completed_at,config_json,metrics_json FROM amd_validation_runs WHERE (? IS NULL OR symbol=?) ORDER BY completed_at DESC LIMIT 50').bind(symbol,symbol).all<any>();
+  return json({runs:rows.results.map(r=>({...r,config:JSON.parse(r.config_json),metrics:JSON.parse(r.metrics_json)})),liveExecutionEnabled:false});
+ }
  if(path==='/api/institutional/strategy/run'&&request.method==='POST'){
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid symbol'},400);
