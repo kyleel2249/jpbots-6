@@ -17,7 +17,7 @@ interface DurableStorage { get<T=any>(key:string):Promise<T|undefined>; put(key:
 interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
-interface Env { DB:D1Database; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string }
+interface Env { DB:D1Database; KV_BINDING:KVNamespace; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
@@ -131,6 +131,7 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
  const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,monteCarlo,costSensitivity,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
  await env.DB.prepare('INSERT INTO institutional_strategy_runs(run_id,symbol,mode,strategy_version,created_at,result_json,qualification_json) VALUES(?,?,?,?,?,?,?)').bind(runId,symbol,autoPaperRequested?'automatic-paper':'analysis','institutional-mtf-v1',createdAt,JSON.stringify(result),JSON.stringify(qualification)).run();
  await env.DB.batch(Object.entries(qualification.checks).map(([stage,passed])=>env.DB.prepare('INSERT INTO strategy_qualification_evidence(evidence_id,strategy_id,version,stage,passed,metrics_json,created_at) VALUES(?,?,?,?,?,?,?)').bind(uuid(),'institutional-mtf','1.0.0',stage,passed?1:0,JSON.stringify({runId,replay:replay.metrics,oos,walkForward:walkForward.aggregate}),createdAt)));
+ await env.KV_BINDING.put('institutional:latest:'+symbol,JSON.stringify({runId,createdAt,qualification,plan,summary:result.report}),{expirationTtl:86400});
  await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
  return result;
 }
