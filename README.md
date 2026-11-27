@@ -68,7 +68,7 @@ The Worker requires the D1 and Durable Object bindings declared in `wrangler.tom
 - The scheduled scanner currently produces observations and risk-gated assessments. It deliberately does not submit orders.
 - The scanner's execution-economics check remains closed until a validated strategy entry/stop/target model and venue-specific fee schedule are configured.
 - No primary account is configured or reconciled. The capital authority therefore blocks entries by default.
-- Live trading is hard-disabled. No private exchange credentials, Bitget execution adapter, margin/futures order adapter, Solana DEX swap adapter or withdrawal capability is connected.
+- Live trading is hard-disabled. No private exchange credentials, Bitget order execution adapter, margin/futures order adapter, Solana DEX swap adapter or withdrawal capability is connected. Bitget public market-data endpoints do not imply trading support.
 - Macro/news providers and source-trader discovery providers are not configured. The API reports these as unavailable instead of fabricating results.
 - The current scheduled queue executes market-scan tasks; it does **not** mean 162 independent AI processes are deployed. The other departments remain registered and require their own tested task handlers, provider integrations, persistence and health monitoring.
 - Backtesting currently implements one EMA crossover research strategy, not the full multi-strategy, tick-replay, market-impact or multi-exchange test suite. Backtest success never enables live trading.
