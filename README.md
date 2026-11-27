@@ -76,7 +76,7 @@ Vite proxies `/api` to the local Worker at `127.0.0.1:8787`.
 
 1. The Worker is configured for the supplied D1 database `jpbots-6_db` and ID `cb74859a-b5a2-4347-9249-2de75b4369df` under account `08c532bd849cab6fbecdffbdf1718aa9`.
 2. Apply remote migrations with `npm run db:remote`.
-3. Create or select the KV namespace `jpbots-6_KV`, then add its actual namespace ID to a `[[kv_namespaces]]` binding named `KV` in `wrangler.toml`. Cloudflare requires the namespace ID; the display name and account ID are not sufficient.
+3. The `jpbots-6_KV` namespace is bound as `KV_BINDING` in `wrangler.toml` using namespace ID `4db9e3faff394ca483a7592c6d71a14c`. The Worker uses it to cache the latest institutional strategy snapshot for 24 hours; D1 remains the durable audit/history store.
 4. Deploy the backend Worker: `npm run deploy:backend`.
 5. Deploy the Vite dashboard to Cloudflare Pages with build command `npm run build` and output directory `dist`.
 6. Configure a Cloudflare Pages Service Binding named `API_WORKER` pointing to the deployed Worker service `jp-bots-6-backend`. The Pages Function under `functions/api/[[path]].ts` proxies dashboard API calls to that binding.

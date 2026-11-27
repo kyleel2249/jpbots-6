@@ -26,5 +26,9 @@ AI_ENABLED = "false"
 AUTO_PAPER_ENABLED = "false"
 AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 
+[[kv_namespaces]]
+binding = "KV_BINDING"
+id = "4db9e3faff394ca483a7592c6d71a14c"
+
 [ai]
 binding = "AI"
