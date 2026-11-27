@@ -69,5 +69,6 @@ describe('performance data integrity',()=>{
 });
 
 describe('legacy signal helper cannot bypass central authority',()=>{
+ const healthy={equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true};
  it('rejects legacy signals without entry stop target and cost economics',()=>{const agent={id:1,name:'trend',division:'Market Intelligence',strategy:'trend',symbol:'BTCUSDT',timeframe:'1m',status:'READY' as const,confidence:90,trades:100,winRate:60,pnl:100,risk:.2};const signal={id:1,time:'now',symbol:'BTCUSDT',side:'LONG' as const,strategy:'trend',confidence:90,agent:'trend',status:'WATCH' as const};const r=signalDecision(signal,agent,healthy,defaultRisk,.2);expect(r.approved).toBe(false);expect(r.reasons).toContain('net reward/risk economics unacceptable');});
 });
