@@ -36,6 +36,7 @@ jobs:
         with:
           path: .backend-deployed
           key: backend-deployed-${{ github.sha }}
+          retention-days: 90
       - name: Apply production D1 migrations
         if: steps.backend-deployed.outputs.cache-hit != 'true'
         run: npx wrangler d1 migrations apply jpbots-6_db --remote
