@@ -244,6 +244,8 @@ The global scanner is a **market-data discovery and research system**, not a bac
 - Binance Spot: exchange-wide active USDT, USDC and FDUSD spot catalog plus 24-hour tickers.
 - Binance USD-M: active USDT/USDC perpetual contract catalog and 24-hour tickers.
 - Bitget Spot and Bitget USDT perpetual: public exchange-wide ticker feeds.
+- Bybit Spot and Linear USDT perpetual: public exchange-wide ticker feeds.
+- OKX Spot and USDT perpetual swaps: public exchange-wide ticker feeds.
 - GeckoTerminal: new-pool discovery on Solana, Ethereum, Base, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche.
 - DexScreener: latest token-profile discovery.
 - DeFiLlama: chain-level TVL observations.
@@ -260,7 +262,7 @@ To enable Twelve Data coverage, create an API key with the provider and store it
 npx wrangler secret put TWELVEDATA_API_KEY
 ```
 
-Do not put provider keys in frontend variables, source files, Pages static assets, or browser storage. The current adapter rotates through a small quote set to limit free-tier request usage. The provider's plan and rate limits determine actual coverage.
+Do not put provider keys in frontend variables, source files, Pages static assets, or browser storage. The current adapter rotates through a small six-symbol quote set to limit free-tier request usage. The provider's plan and rate limits determine actual coverage.
 
 ### Scanner endpoints
 
