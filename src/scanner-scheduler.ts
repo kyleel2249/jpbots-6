@@ -1,5 +1,5 @@
 export type ScannerTaskKind='market-scan'|'institutional-scan'|'amd-forward-scan'|'institutional-strategy-scan';
-export type ScheduledScannerTask={id:string;kind:ScannerTaskKind;symbol:string;createdAt:number};
+export type ScheduledScannerTask={id:string;kind:ScannerTaskKind;symbol:string;createdAt:number;roleId?:string};
 export const SCANNER_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT'] as const;
 // Average load is 3 market tasks/minute plus 36 institutional specialist tasks,
 // 6 AMD tasks and 6 optional strategy tasks per five minutes. A 12-task alarm
