@@ -24,7 +24,7 @@ function range(cs:StrategyCandle[]){return cs.length?{high:Math.max(...cs.map(c=
 function average(xs:number[]){return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:0;}
 function trueRange(c:StrategyCandle,p:StrategyCandle){return Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));}
 function atr(cs:StrategyCandle[]){const x=cs.slice(-15);return x.length>1?average(x.slice(1).map((c,i)=>trueRange(c,x[i]))):0;}
-function arrays(cs:StrategyCandle[],minStrength=65):AmdArray[]{
+export function buildAmdPdArrays(cs:StrategyCandle[],minStrength=65):AmdArray[]{
  const out:AmdArray[]=[];
  for(let i=2;i<cs.length;i++){
   const a=cs[i-2],b=cs[i-1],c=cs[i],vol=average(cs.slice(Math.max(0,i-10),i).map(x=>x.volume)),vRatio=vol?b.volume/vol:0,rangeB=b.high-b.low;
@@ -62,7 +62,7 @@ export function analyseAmdSession(candles:StrategyCandle[],now=Date.now(),timezo
    if(prior.length>=5&&candidateAtr>0){const sh=Math.max(...prior.slice(0,-1).map(c=>c.high)),sl=Math.min(...prior.slice(0,-1).map(c=>c.low));if(candidate.close>sh&&candidate.close-candidate.open>=candidateAtr*.35){mss='bullish';if(candidate.closeTime>=lastStructureTime){confirmed='bullish';lastStructureTime=candidate.closeTime;}}if(candidate.close<sl&&candidate.open-candidate.close>=candidateAtr*.35){mss='bearish';if(candidate.closeTime>=lastStructureTime){confirmed='bearish';lastStructureTime=candidate.closeTime;}}}
   }
  }
- const pd=arrays(manipulation,Math.max(50,Math.min(100,options.minArrayStrength??65))),price=last?.close??null;
+ const pd=buildAmdPdArrays(manipulation,Math.max(50,Math.min(100,options.minArrayStrength??65))),price=last?.close??null;
  const touched=price===null?[]:pd.filter(z=>z.side===confirmed&&z.strength>=65&&price>=z.low&&price<=z.high);
  const sweepSupports=(confirmed==='bullish'&&sweptLow)||(confirmed==='bearish'&&sweptHigh);
  const activeArray=touched.sort((a,b)=>b.strength-a.strength)[0]??null;
