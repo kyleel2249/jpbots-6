@@ -17,6 +17,7 @@ export const onRequest=async(context:PagesContext):Promise<Response>=>{
   headers.set('authorization','Bearer '+env.OPERATOR_API_TOKEN);
  }
  headers.set('x-requested-with','jp-bots-6-pages-proxy');
- const forwarded=new Request(target.toString(),{method:request.method,headers,body:['GET','HEAD'].includes(request.method)?undefined:request.body,redirect:'manual'});
+ const body=['GET','HEAD'].includes(request.method)?undefined:await request.arrayBuffer();
+ const forwarded=new Request(target.toString(),{method:request.method,headers,body,redirect:'manual'});
  try{return await binding.fetch(forwarded);}catch{return new Response(JSON.stringify({ok:false,error:'Backend Worker service binding request failed',code:'BACKEND_BINDING_UNAVAILABLE'}),{status:502,headers:{'content-type':'application/json','cache-control':'no-store'}});}
 };
