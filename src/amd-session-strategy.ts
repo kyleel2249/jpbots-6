@@ -13,12 +13,13 @@ export type AmdAssessment={
 
 export const DEFAULT_AMD_TIMEZONE='UTC';
 const finite=(x:number)=>Number.isFinite(x);
-const formatterCache=new Map<string,Intl.DateTimeFormat>();
+const formatterCache=new Map<string,Intl.DateTimeFormat>(),localPartsCache=new Map<string,Map<number,{date:string;hour:number;minute:number;clock:string}>>();
 function localParts(time:number,timeZone:string){
+ let cache=localPartsCache.get(timeZone);if(!cache){cache=new Map();localPartsCache.set(timeZone,cache);}const cached=cache.get(time);if(cached)return cached;
  let formatter=formatterCache.get(timeZone);if(!formatter){formatter=new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});formatterCache.set(timeZone,formatter);}
  const p=formatter.formatToParts(new Date(time));
  const v=Object.fromEntries(p.map(x=>[x.type,x.value]));
- return {date:v.year+'-'+v.month+'-'+v.day,hour:Number(v.hour),minute:Number(v.minute),clock:v.hour+':'+v.minute};
+ const result={date:v.year+'-'+v.month+'-'+v.day,hour:Number(v.hour),minute:Number(v.minute),clock:v.hour+':'+v.minute};if(cache.size>30000)cache.clear();cache.set(time,result);return result;
 }
 function range(cs:StrategyCandle[]){return cs.length?{high:Math.max(...cs.map(c=>c.high)),low:Math.min(...cs.map(c=>c.low))}:{high:null,low:null};}
 function average(xs:number[]){return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:0;}
