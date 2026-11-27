@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS division_paper_positions (
   risk_pct REAL NOT NULL,
   strategy_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('open','closing','closed')),
+  closing_since INTEGER,
   opened_at INTEGER NOT NULL,
   closed_at INTEGER,
   exit_price REAL,
