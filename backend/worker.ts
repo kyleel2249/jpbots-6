@@ -45,13 +45,15 @@ async function marketBundle(env:Env,symbol:string){
 }
 async function runMarketScan(env:Env,symbol:string){
  const bundle=await marketBundle(env,symbol),report=buildMarketReport(bundle.snapshot),capital=await getCapital(env);
+ const mtfRows=await Promise.all(['5m','15m','1h','4h'].map(async interval=>{const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=80');const closes=rows.map(k=>Number(k[4]));const fast=ema(closes,9),slow=ema(closes,21);return {interval,fast,slow,direction:fast===null||slow===null?'unknown':fast>slow?'bullish':fast<slow?'bearish':'neutral',lastClose:closes[closes.length-1]};}));
  const bullish=bundle.ema9!==null&&bundle.ema21!==null&&bundle.ema9>bundle.ema21&&bundle.rsi14!==null&&bundle.rsi14>=50&&bundle.rsi14<=70;
  const bearish=bundle.ema9!==null&&bundle.ema21!==null&&bundle.ema9<bundle.ema21&&bundle.rsi14!==null&&bundle.rsi14>=30&&bundle.rsi14<=50;
  const stance:Evidence['stance']=bullish?'bullish':bearish?'bearish':'neutral';
- const evidence:Evidence[]=[{agent:'Market Structure & EMA Trend',stance,confidence:Math.round(Math.min(99,Math.abs((bundle.ema9??0)-(bundle.ema21??0))/(bundle.lastPrice||1)*10000)),reason:'EMA9='+bundle.ema9?.toFixed(4)+' EMA21='+bundle.ema21?.toFixed(4)+' RSI14='+bundle.rsi14?.toFixed(2)}];
+ const aligned=mtfRows.every(x=>x.direction===stance)&&stance!=='neutral';
+ const evidence:Evidence[]=[{agent:'Market Structure & EMA Trend',stance,confidence:Math.round(Math.min(99,Math.abs((bundle.ema9??0)-(bundle.ema21??0))/(bundle.lastPrice||1)*10000)),reason:'EMA9='+bundle.ema9?.toFixed(4)+' EMA21='+bundle.ema21?.toFixed(4)+' RSI14='+bundle.rsi14?.toFixed(2)+'; MTF '+mtfRows.map(x=>x.interval+':'+x.direction).join(', ')}];
  const result=evaluateIntegratedOpportunity({market:bundle.snapshot,book:bundle.book,evidence,capital,signalValid:false,economicsValid:false,exchangeHealthy:true,maxAgeMs:90000,now:bundle.observedAt});
  const id=uuid(),blockers=[...result.decision.arbitration.blockers,...result.decision.risk.reasons,'strategy validation and fee schedule are not configured; live execution is disabled'];
- const decision={id,symbol,observedAt:bundle.observedAt,source:bundle.snapshot.source,price:bundle.lastPrice,ema9:bundle.ema9,ema21:bundle.ema21,rsi14:bundle.rsi14,report,orderBook:result.orderBook,decision:'observation-only',tradeAuthorized:false,mode:'paper',blockers};
+ const decision={id,symbol,observedAt:bundle.observedAt,source:bundle.snapshot.source,price:bundle.lastPrice,ema9:bundle.ema9,ema21:bundle.ema21,rsi14:bundle.rsi14,multiTimeframe:{aligned,directions:mtfRows},report,orderBook:result.orderBook,decision:'observation-only',tradeAuthorized:false,mode:'paper',blockers};
  await env.DB.prepare('INSERT INTO market_snapshots(id,symbol,source,timeframe,observed_at,payload_json) VALUES(?,?,?,?,?,?)').bind(uuid(),symbol,bundle.snapshot.source,'1m',bundle.observedAt,JSON.stringify(bundle.snapshot)).run();
  await env.DB.prepare('INSERT INTO orderbook_snapshots(id,symbol,source,observed_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),symbol,'Binance Spot public REST',bundle.observedAt,JSON.stringify(result.orderBook)).run();
  await env.DB.prepare('INSERT INTO scan_decisions(id,symbol,observed_at,market_regime,direction,decision,blockers_json,report_json) VALUES(?,?,?,?,?,?,?,?)').bind(id,symbol,bundle.observedAt,String(report.regime),String(report.direction),'observation-only',JSON.stringify(blockers),JSON.stringify(decision)).run();
