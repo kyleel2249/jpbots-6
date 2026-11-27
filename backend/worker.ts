@@ -196,7 +196,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid market symbol'},400);
   const bundle=await marketBundle(env,symbol),raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval=1m&limit=120');
   const candles=raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
-  const analysis=analyseInstitutionalMarket({symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades:(bundle.book.trades??[]).filter(t=>t.aggressor==='buy'||t.aggressor==='sell')});
+  const analysis=analyseInstitutionalMarket({symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades:(bundle.book.trades??[]).filter((t):t is {price:number;quantity:number;aggressor:'buy'|'sell';timestamp:number}=>t.aggressor==='buy'||t.aggressor==='sell')});
   const analysisId=uuid(),createdAt=Date.now(),tasks=analysis.findings.map(f=>({id:uuid(),kind:'institutional-role' as const,symbol,createdAt,roleId:'institutional:'+f.agent,correlationId:analysisId,payload:f}));
   await env.DB.batch([
    env.DB.prepare('INSERT INTO institutional_analyses(analysis_id,symbol,observed_at,source,result_json) VALUES(?,?,?,?,?)').bind(analysisId,symbol,createdAt,'Binance Spot public REST',JSON.stringify(analysis)),
