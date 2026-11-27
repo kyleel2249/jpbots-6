@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {evaluateAdaptiveTrading} from './adaptive-trading';
-const base={symbol:'BTCUSDT',assetClass:'crypto',price:60000,direction:'long' as const,observedAt:Date.now(),spreadBps:2,estimatedRoundTripCostBps:5,volatilityPct:0.6,volumeRatio:2,trendAlignment:.8,orderBookImbalance:.7,liquidityUsd:100000,atrPct:1,dataAgeMs:500,sessionEligible:true,fvg:true,liquiditySweep:true,marketStructureShift:true,vwapAligned:true};
+const base={symbol:'BTCUSDT',assetClass:'crypto',price:60000,direction:'long' as const,observedAt:Date.now(),spreadBps:1,estimatedRoundTripCostBps:1,volatilityPct:1.5,volumeRatio:3,trendAlignment:.98,orderBookImbalance:.95,liquidityUsd:100000,atrPct:1,dataAgeMs:500,sessionEligible:true,fvg:true,liquiditySweep:true,marketStructureShift:true,vwapAligned:true};
 describe('adaptive trading arbitrator',()=>{
  it('selects both independent divisions only when both clear strong aligned evidence',()=>{const d=evaluateAdaptiveTrading(base);expect(d.mode).toBe('COMBINATION');expect(d.selected).toHaveLength(2);expect(d.liveTradingEnabled).toBe(false);});
  it('stands down on stale data, excessive costs and thin liquidity',()=>{const d=evaluateAdaptiveTrading({...base,dataAgeMs:90000,estimatedRoundTripCostBps:100,liquidityUsd:1});expect(d.mode).toBe('NEITHER');expect(d.standDown).toBe(true);});
