@@ -166,12 +166,15 @@ async function runAmdForwardScan(env:Env,symbol:string){
  if(paperEnabled&&assessment.qualified&&record.arbitration?.approved){
   if(plan.side!=='long')paperExecution={opened:false,reason:'Current paper engine supports Spot-long only; bearish AMD opportunities remain recorded but are not executed'};
   else{
-   const existing=await env.DB.prepare("SELECT COUNT(*) AS count FROM amd_forward_opportunities WHERE symbol=? AND session_date=? AND status='paper-opened'").bind(symbol,assessment.sessionDate).first<any>();
-   if(Number(existing?.count??0)>0)paperExecution={opened:false,reason:'One AMD paper entry has already been recorded for this symbol and session'};
+   const lease=await env.DB.prepare("INSERT INTO amd_paper_session_locks(symbol,session_date,state,lease_until,position_id,updated_at) VALUES(?,?,'reserved',?,NULL,?) ON CONFLICT(symbol,session_date) DO UPDATE SET state='reserved',lease_until=excluded.lease_until,position_id=NULL,updated_at=excluded.updated_at WHERE amd_paper_session_locks.state='failed' OR (amd_paper_session_locks.state='reserved' AND amd_paper_session_locks.lease_until<?)").bind(symbol,assessment.sessionDate,now+120000,now,now).run();
+   if(Number(lease.meta?.changes??0)!==1)paperExecution={opened:false,reason:'An AMD paper entry is already open or reserved for this symbol and session'};
    else{
-    const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
-    if(!nearPlan||!geometry)paperExecution={opened:false,reason:'Live price is not near the independently validated entry or stop/target geometry is invalid'};
-    else{paperOrderAttempted=true;const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:defaultInstitutionalStrategyConfig.riskPct,feeBps:defaultInstitutionalStrategyConfig.feeBps,strategy:'amd-forward-v1'});paperOpened=!!order.position;paperExecution={...order,opened:paperOpened};}
+    try{
+     const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
+     if(!nearPlan||!geometry)paperExecution={opened:false,reason:'Executable price is not near the independently validated entry or stop/target geometry is invalid'};
+     else{paperOrderAttempted=true;const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:defaultInstitutionalStrategyConfig.riskPct,feeBps:defaultInstitutionalStrategyConfig.feeBps,strategy:'amd-forward-v1'});paperOpened=!!order.position;paperExecution={...order,opened:paperOpened};}
+     await env.DB.prepare("UPDATE amd_paper_session_locks SET state=?,lease_until=?,position_id=?,updated_at=? WHERE symbol=? AND session_date=? AND state='reserved'").bind(paperOpened?'opened':'failed',paperOpened?Number.MAX_SAFE_INTEGER:now,paperOpened?String(paperExecution.position?.positionId??''):null,Date.now(),symbol,assessment.sessionDate).run();
+    }catch(error){await env.DB.prepare("UPDATE amd_paper_session_locks SET state='failed',lease_until=?,updated_at=? WHERE symbol=? AND session_date=? AND state='reserved'").bind(now,Date.now(),symbol,assessment.sessionDate).run();paperExecution={opened:false,reason:'AMD paper execution failed: '+String(error)};}
    }
   }
  }
