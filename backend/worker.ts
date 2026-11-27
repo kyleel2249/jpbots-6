@@ -79,7 +79,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({market,source:'Bitget public REST',observedAt:Date.now(),tickers:rows});
  }
  if(path==='/api/market/klines'&&request.method==='GET'){
-  const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase(),interval=url.searchParams.get('interval')||'1m',limit=Math.min(1000,Math.max(10,Number(url.searchParams.get('limit')||200)));
+  const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase(),interval=url.searchParams.get('interval')||'1m',requestedLimit=Number(url.searchParams.get('limit')||200),limit=Number.isFinite(requestedLimit)?Math.min(1000,Math.max(10,requestedLimit)):200;
   if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!['1m','3m','5m','15m','30m','1h','4h','1d'].includes(interval))return json({error:'Invalid symbol or interval'},400);
   const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+symbol+'&interval='+interval+'&limit='+limit);
   const candles=rows.map(k=>({openTime:k[0],open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5]),closeTime:k[6]}));
@@ -93,7 +93,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({source:'Binance Spot REST',observedAt:Date.now(),...depth});
  }
  if(path==='/api/solana/new-pools'&&request.method==='GET'){
-  const limit=Math.min(20,Math.max(1,Number(url.searchParams.get('limit')||10)));
+  const requestedLimit=Number(url.searchParams.get('limit')||10),limit=Number.isFinite(requestedLimit)?Math.min(20,Math.max(1,requestedLimit)):10;
   const payload=await getJson<any>('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
   const pools=(payload.data||[]).slice(0,limit).map((p:any)=>({poolId:p.id,attributes:p.attributes,baseTokenId:p.relationships?.base_token?.data?.id,quoteTokenId:p.relationships?.quote_token?.data?.id,source:'GeckoTerminal'}));
   return json({chain:'solana',source:'GeckoTerminal public API',observedAt:Date.now(),pools});
@@ -121,7 +121,7 @@ async function route(request:Request,env:Env):Promise<Response>{
  }
  if(path==='/api/backtests'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT run_id,symbol,interval_name,strategy_id,strategy_version,completed_at,metrics_json FROM backtest_runs ORDER BY completed_at DESC LIMIT 50').all();return json({runs:rows.results});}
  if(path==='/api/scan'&&request.method==='POST'){
-  const body=await request.json().catch(()=>({})) as {symbols?:string[]};const symbols=(body.symbols??['BTCUSDT','ETHUSDT','SOLUSDT']).filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,5);
+  const body=await request.json().catch(()=>({})) as {symbols?:unknown};const requested=Array.isArray(body.symbols)?body.symbols:['BTCUSDT','ETHUSDT','SOLUSDT'];const symbols=requested.filter((s):s is string=>typeof s==='string'&&/^[A-Z0-9]{5,20}$/.test(s)).slice(0,5);
   if(!symbols.length)return json({error:'No valid symbols supplied'},400);
   const scans=await Promise.allSettled(symbols.map(s=>runMarketScan(env,s)));
   return json({mode:'observation-only',liveTradingEnabled:false,scans:scans.map((s,i)=>s.status==='fulfilled'?s.value:{symbol:symbols[i],error:String(s.reason)})});
