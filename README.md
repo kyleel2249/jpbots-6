@@ -277,3 +277,18 @@ Do not put provider keys in frontend variables, source files, Pages static asset
 No single public provider exposes every exchange, every tradable pair, every forex venue, every equity, every commodity, or every on-chain pool. Public API catalogues are incomplete, rate-limited and may be delayed. This implementation therefore reports source-level health and clearly separates exchange-listed instruments, DEX discovery, chain TVL and daily FX reference rates. It does not claim exhaustive global-market coverage. More exchange adapters, licensed institutional feeds, exchange-specific contract metadata, RPC/indexer providers, and intraday FX/equities subscriptions are required to approach comprehensive coverage.
 
 All outputs are research-only. No global scanner result can authorise an order; live exchange execution remains disabled.
+
+
+## Independent scalping, day-trading and adaptive arbitration
+
+The Scalping and Day Trading departments are separate strategy divisions. The adaptive engine in `src/adaptive-trading.ts` evaluates each division independently using its own evidence weights, strategy library, freshness window, cost/spread limits, liquidity floor, entry score and risk policy. Default paper allocations are USD 2 for scalping and USD 3 for day trading, proportionally capped by the available paper-account capital. These are isolated policy allocations, not real funds or exchange balances.
+
+The Adaptive Trading Intelligence arbitrator returns one of four outcomes: `SCALPING`, `DAY_TRADING`, `COMBINATION` (both independently qualify with strong aligned direction), or `NEITHER`. Conflicting directional evidence blocks both divisions. Stale data, excessive costs/spread, thin liquidity, unsuitable volatility, out-of-session day setups and weak evidence veto entries. A no-trade result is an intended safe outcome.
+
+Protected operator endpoint:
+- `GET /api/adaptive-trading/status` — division allocations, stored decisions and division-tagged closed paper performance.
+- `POST /api/adaptive-trading/evaluate` — submit a validated evidence snapshot for independent division scoring and persist the arbitrator decision. Requires `Authorization: Bearer $OPERATOR_API_TOKEN`; request body contains `evidence` with symbol, direction, price, observation time, spread/cost, volatility, volume, trend, order-book imbalance, liquidity, data age, session eligibility and SMC/FVG/sweep/VWAP flags.
+
+**Current qualification boundary:** this increment adds the independent evaluation engine, protected decision API, persistent decision history, division policy records and unified dashboard. It does not yet automatically feed every global-market scan into this endpoint, automatically submit division-specific paper orders, or populate the new division performance ledger from existing paper fills. The existing paper executor is Spot-long only; it cannot safely represent short scalps or multi-venue/perpetual trading. Those execution paths must be separately implemented and validated before automatic division trading is enabled. No live exchange orders are enabled.
+
+The 98% return KPI is aspirational and not a forecast or guarantee. Risk limits, drawdown controls, data quality, execution economics and capital preservation take precedence.
