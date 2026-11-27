@@ -82,7 +82,7 @@ After configuration, verify:
 - **Cloudflare Worker API** in `backend/worker.ts`, deployed separately from the Vite/Pages dashboard.
 - **Cloudflare D1** migrations for market snapshots, order-book snapshots, scan decisions, agent tasks/state, portfolio account state, trade memory, strategy versions, audit events, backtest runs and paper-execution event records.
 - **Durable Object orchestration queue** with persistent queued tasks and alarm-driven processing.
-- **Scheduled market scanning** every minute for BTCUSDT, ETHUSDT and SOLUSDT. The queue runs the market scanner and institutional analysis pipeline independently of the browser tab, then fans institutional findings out to ten institutional role tasks per symbol.
+- **Scheduled market scanning** every minute for BTCUSDT, ETHUSDT and SOLUSDT. The Durable Object alarm scheduler runs the market scanner and institutional analysis pipeline independently of the browser tab, then fans institutional findings out to ten institutional role tasks per symbol. The scheduler is bootstrapped by the first Worker HTTP request and then re-arms its own alarm every minute; it does not consume an account-level Cron Trigger.
 - **Real Binance Spot public REST data** for 24-hour tickers, OHLCV candles, order-book depth and aggregate trades. The scanner calculates 1m EMA/RSI and 5m/15m/1h/4h EMA alignment, builds a structured market report and evaluates order-book evidence.
 - **Real DexScreener token-pair lookup** for a supplied Solana token mint. This is read-only lookup, not a complete new-pair stream or DEX execution adapter.
 - **Historical research backtesting** using Binance candles and a legacy EMA crossover baseline. The institutional engine separately provides 5m/15m/1h/4h trend alignment, FVG retracement entries, swing/ATR stops, cost-adjusted targets, conservative historical replay, rolling walk-forward folds and a final untouched 20% out-of-sample segment. The replay includes fee, slippage, spread and impact assumptions and resolves same-candle stop/target collisions conservatively by assuming the stop is hit first.
@@ -136,7 +136,7 @@ Vite proxies `/api` to the local Worker at `127.0.0.1:8787`.
 5. Deploy the Vite dashboard to Cloudflare Pages with build command `npm run build` and output directory `dist`.
 6. Configure a Cloudflare Pages Service Binding named `API_WORKER` pointing to the deployed Worker service `jp-bots-6-backend`. The Pages Function under `functions/api/[[path]].ts` proxies dashboard API calls to that binding.
 
-The Worker must not be deployed until remote migrations have completed and the required KV namespace binding has been configured. Live exchange execution remains disabled.
+The Worker must not be deployed until remote migrations have completed and the required KV namespace binding has been configured. The scheduler uses a Durable Object alarm rather than a Cron Trigger, so it works within Cloudflare Free's five-account-cron limit. The first HTTP request to the Worker bootstraps the alarm; subsequent scheduling is autonomous. Live exchange execution remains disabled.
  
 ## Decision and safety boundaries
 
