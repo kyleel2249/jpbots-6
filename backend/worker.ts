@@ -8,7 +8,7 @@ import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 import { runDepartmentCouncil, type WorkersAiBinding } from '../src/agent-runtime';
 import { analyseInstitutionalMarket } from '../src/institutional-intelligence';
 import { analyseAmdSession } from '../src/amd-session-strategy';
-import { replayAmdSessions, optimiseAmdParameters, walkForwardAmd, buildAmdForwardRecord, type AmdValidationConfig } from '../src/amd-validation';
+import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwardAmd, buildAmdForwardRecord, type AmdValidationConfig } from '../src/amd-validation';
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 
