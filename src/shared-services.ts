@@ -66,19 +66,22 @@ export function classifyPerformance(x:PerformanceSample){const profitFactor=x.gr
 export function agentTrustScore(input:{successfulTasks:number;failedTasks:number;policyViolations:number;dataErrors:number;decisionReversals:number}){const total=input.successfulTasks+input.failedTasks;const reliability=total?input.successfulTasks/total:0;return Math.max(0,Math.min(100,reliability*100-input.policyViolations*15-input.dataErrors*5-input.decisionReversals*2));}
 
 /** The single decision boundary strategies, replications and bots must call before any order request. */
-export function authorizeTrade(input:{evidence:Evidence[];checks:{dataFresh:boolean;signalValid:boolean;economicsValid:boolean;exchangeHealthy:boolean};capital:CapitalState;policy?:CapitalPolicy;scalping?:BotGuardInput}){
- const risk=capitalAuthority(input.capital,input.policy??defaultCapitalPolicy);
+export function authorizeTrade(input:{evidence:Evidence[];checks:{dataFresh:boolean;signalValid:boolean;economicsValid:boolean;exchangeHealthy:boolean};capital:CapitalState;proposedRiskPct:number;policy?:CapitalPolicy;scalping?:BotGuardInput}){
+ const policy=input.policy??defaultCapitalPolicy,baseRisk=capitalAuthority(input.capital,policy),riskReasons=[...baseRisk.reasons];
+ if(!Number.isFinite(input.proposedRiskPct)||input.proposedRiskPct<=0)riskReasons.push('proposed per-trade risk is missing or invalid');else if(input.proposedRiskPct>policy.maxRiskPerTradePct)riskReasons.push('proposed per-trade risk exceeds capital policy');
+ const risk={...baseRisk,allowNewEntries:riskReasons.length===0,reasons:riskReasons,riskThrottle:riskReasons.length?0:baseRisk.riskThrottle};
  const arbitration=arbitrateTradeEvidence(input.evidence,{...input.checks,riskApproved:risk.allowNewEntries,exchangeHealthy:input.checks.exchangeHealthy&&input.capital.exchangeHealthy,dataFresh:input.checks.dataFresh&&input.capital.dataFresh});
  const scalp=input.scalping?scalpingGuard(input.scalping):{allowed:true,reasons:[] as string[]};
  const approved=arbitration.decision==='eligible-for-risk-authorisation'&&risk.allowNewEntries&&scalp.allowed;
  return {approved,decision:approved?'paper-order-eligible':'rejected',mode:'paper' as const,liveExecutionEnabled:false as const,risk,arbitration,scalping:scalp,finalAuthority:'capital-protection'};
 }
-export function authorizeOrder(input:{signalApproved:boolean;capital:CapitalState;market:'spot'|'margin'|'usdt-m'|'coin-m'|'usdc-m';quantity:number;price?:number;minQuantity:number;quantityStep:number;priceTick?:number;liveRequested?:boolean}){
+export function authorizeOrder(input:{signalApproved:boolean;capital:CapitalState;proposedRiskPct:number;market:'spot'|'margin'|'usdt-m'|'coin-m'|'usdc-m';quantity:number;price?:number;minQuantity:number;quantityStep:number;priceTick?:number;liveRequested?:boolean}){
  const risk=capitalAuthority(input.capital),errors=[...risk.reasons];
+ if(!Number.isFinite(input.proposedRiskPct)||input.proposedRiskPct<=0)errors.push('proposed per-trade risk is missing or invalid');else if(input.proposedRiskPct>defaultCapitalPolicy.maxRiskPerTradePct)errors.push('proposed per-trade risk exceeds capital policy');
  if(!input.signalApproved)errors.push('signal not approved');if(input.liveRequested)errors.push('live execution disabled');
  if(!Number.isFinite(input.quantity)||input.quantity<input.minQuantity)errors.push('quantity below minimum or invalid');
  if(!Number.isFinite(input.quantityStep)||input.quantityStep<=0||Math.abs(input.quantity/input.quantityStep-Math.round(input.quantity/input.quantityStep))>1e-8)errors.push('quantity precision invalid');
  if(input.price!==undefined&&(!Number.isFinite(input.price)||input.price<=0))errors.push('price invalid');
  if(input.priceTick!==undefined&&(!Number.isFinite(input.priceTick)||input.priceTick<=0||input.price===undefined||Math.abs(input.price/input.priceTick-Math.round(input.price/input.priceTick))>1e-8))errors.push('price precision invalid');
- return {approved:errors.length===0,errors,market:input.market,quantity:input.quantity,mode:'paper' as const,liveExecutionEnabled:false as const,capitalVeto:!risk.allowNewEntries};
-}
+ return {approved:errors.length===0,errors,market:input.market,quantity:input.quantity,mode:'paper' as const,liveExecutionEnabled:false as const,capitalVeto:!risk.allowNewEntries||errors.some(x=>x.includes('per-trade risk'))};
+}}
