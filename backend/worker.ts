@@ -302,8 +302,8 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(days)||days<1||days>60)return json({error:'Valid symbol and 1–60 day history window are required'},400);
   const candles=await fetchAmdHistory(env,symbol,days),config={...({} as AmdValidationConfig),...(body.config||{}),timezone:String(body.timezone||body.config?.timezone||env.AMD_SESSION_TIMEZONE||'UTC')},result=replayAmdSessions(candles,config);
   if(!result.valid)return json({error:'AMD replay validation failed',reasons:result.errors},422);
-  const runId=await saveAmdValidation(env,symbol,'replay',result.config,result,result.metrics);
-  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,liveExecutionEnabled:false});
+  const costSensitivity=amdCostSensitivity(candles,result.config),runId=await saveAmdValidation(env,symbol,'replay',result.config,{...result,costSensitivity},result.metrics);
+  return json({runId,symbol,source:'Binance Spot 5m historical klines',historyDays:days,...result,costSensitivity,liveExecutionEnabled:false});
  }
  if(path==='/api/amd/optimise'&&request.method==='POST'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
