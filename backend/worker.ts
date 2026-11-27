@@ -11,6 +11,7 @@ import { analyseAmdSession } from '../src/amd-session-strategy';
 import { replayAmdSessions, amdCostSensitivity, optimiseAmdParameters, walkForwardAmd, buildAmdForwardRecord, type AmdValidationConfig } from '../src/amd-validation';
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
+import { assessAdvancedMarket } from '../src/advanced-intelligence';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -205,8 +206,17 @@ async function runMarketScan(env:Env,symbol:string){
 async function route(request:Request,env:Env):Promise<Response>{
  const url=new URL(request.url),path=url.pathname;
  if(request.method==='OPTIONS')return new Response(null,{status:204});
- if(path.startsWith('/api/amd/')&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+ if((path.startsWith('/api/amd/')||path==='/api/intelligence/advanced')&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
  if(path==='/api/institutional/strategy/run'&&!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+ if(path==='/api/intelligence/advanced'&&request.method==='POST'){
+  const body=await request.json() as {symbol?:string};
+  const symbol=String(body.symbol||'BTCUSDT').toUpperCase();
+  if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol))return json({error:'Supported symbols: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT'},400);
+  const bundle=await marketBundle(env,symbol);
+  const assessment=assessAdvancedMarket({symbol,observedAt:bundle.observedAt,closes:bundle.closes,volumes:bundle.snapshot.volumes??[],book:bundle.book,trades:bundle.book.trades??[]});
+  await audit(env,'intelligence.advanced.assessed','advanced-intelligence-engine',{symbol,observedAt:assessment.observedAt,regime:assessment.regime.label,consensus:assessment.debate.consensus,vetoes:assessment.adversarial.vetoes.length});
+  return json({assessment,mode:'research-only',liveTradingEnabled:false});
+ }
  if(path==='/api/operator/status'&&request.method==='GET'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
   const checks:{database:string;kv:string;orchestrator:string}={database:'unavailable',kv:'unavailable',orchestrator:'unavailable'};

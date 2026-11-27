@@ -159,3 +159,11 @@ The Worker must not be deployed until remote migrations have completed and the r
 The platform must remain selective: no trade is preferable to an unverified trade. No architecture can guarantee profits; measure all strategy performance net of fees, spread, funding, slippage and execution impact.
 
 Never commit API keys, seed phrases, private keys or exchange secrets.
+
+## Advanced Intelligence 2.0
+
+The **ADVANCED INTELLIGENCE** dashboard tab runs an authenticated, on-demand research assessment over the current Binance Spot 1-minute close/volume sample, public aggregate trades and top-20 displayed order-book depth. It reports a descriptive volatility/trend regime, spread and depth metrics, buy/sell aggressor notional, independent bullish/bearish/neutral evidence arguments, adversarial vetoes and a conservative research-only risk gate.
+
+The endpoint is `POST /api/intelligence/advanced` with `{"symbol":"BTCUSDT"}`. It is protected by `OPERATOR_API_TOKEN`; the Pages proxy strips browser Authorization headers and injects its server-side secret. Supported symbols are BTCUSDT, ETHUSDT, SOLUSDT and BNBUSDT. Every assessment is written to the audit ledger. The engine does not submit orders, does not claim to identify institutions from public trades, and always returns `liveTradingEnabled: false`.
+
+Confidence calibration is deliberately unavailable until at least 20 labelled outcomes are supplied to the calibration function; it is not fabricated from the current market snapshot. The research gate is not a strategy qualification or paper-order authorisation. Historical validation, multi-timeframe confirmation, execution-cost checks and the independent capital veto remain mandatory. Inputs are rejected when candles, volume alignment, order-book levels or trade records are malformed; stale/future order-book data, excessive spread and extreme realised volatility trigger adversarial vetoes.
