@@ -244,6 +244,21 @@ type GlobalInstrument={id:string;symbol:string;name:string;assetClass:GlobalAsse
 const globalJson=async(url:string)=>{const r=await fetch(url,{headers:{accept:'application/json'},signal:AbortSignal.timeout(9000)});if(!r.ok)throw new Error('HTTP '+r.status+' '+new URL(url).hostname);return r.json() as Promise<any>;};
 const finite=(x:any)=>x===null||x===undefined||x===''?undefined:Number.isFinite(Number(x))?Number(x):undefined;
 const percent=(x:any)=>{const n=finite(x);return n===undefined?undefined:n*100;};
+async function ensureDefaultRuntimeAgentAssignments(env:Env,instruments:GlobalInstrument[],opportunities:any[],observedAt:number){
+ const best=opportunities.find(x=>x.instrument?.assetClass==='crypto-spot'&&x.instrument?.venue==='Binance Spot')?.instrument??instruments.find(x=>x.assetClass==='crypto-spot'&&x.venue==='Binance Spot'&&x.tradable&&Number(x.price)>0);
+ if(!best||!/^[A-Z0-9]{5,20}$/.test(String(best.symbol||'')))return {activated:0,assigned:0,reason:'No eligible Binance Spot instrument'};
+ const defaults=allAgentRoles.filter(r=>(r.departmentId==='institutional')||(r.departmentId==='scalp'&&r.name==='Scalping Market Scanner')||(r.departmentId==='day'&&r.name==='Intraday Market Scanner'));
+ await env.DB.batch(defaults.map(r=>env.DB.prepare("INSERT OR IGNORE INTO agent_state(role_id,enabled,status,heartbeat_at,last_error,updated_at) VALUES(?,1,'ASSIGNED',NULL,NULL,?)").bind(r.departmentId+':'+r.name,observedAt)));
+ const ids=defaults.map(r=>r.departmentId+':'+r.name),states=await env.DB.prepare('SELECT role_id,enabled FROM agent_state WHERE role_id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all<any>(),enabled=new Set(states.results.filter((x:any)=>Number(x.enabled)===1).map((x:any)=>String(x.role_id)));
+ const active=defaults.filter(r=>enabled.has(r.departmentId+':'+r.name));
+ if(active.length)await env.DB.batch(active.map(r=>{const id=r.departmentId+':'+r.name,division=r.departmentId==='scalp'?'scalping':r.departmentId==='day'?'day-trading':'shared',timeframe=r.departmentId==='scalp'?'1m/3m/5m':r.departmentId==='day'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME';return env.DB.prepare("INSERT INTO agent_assignments(role_id,division_id,symbol,timeframe,status,assignment_source,assigned_at,updated_at) VALUES(?,?,?,?,'ASSIGNED','global-market-auto-assignment',?,?) ON CONFLICT(role_id) DO UPDATE SET symbol=excluded.symbol,timeframe=excluded.timeframe,status='ASSIGNED',assignment_source=excluded.assignment_source,assigned_at=excluded.assigned_at,updated_at=excluded.updated_at").bind(id,division,best.symbol,timeframe,observedAt,observedAt);}));
+ const scalp=enabled.has('scalp:Scalping Market Scanner'),day=enabled.has('day:Intraday Market Scanner');
+ await env.DB.batch([
+  env.DB.prepare('UPDATE trading_divisions SET enabled=?,updated_at=? WHERE division_id=?').bind(scalp?1:0,observedAt,'scalping'),
+  env.DB.prepare('UPDATE trading_divisions SET enabled=?,updated_at=? WHERE division_id=?').bind(day?1:0,observedAt,'day-trading')
+ ]);
+ return {activated:defaults.filter(r=>!states.results.some((x:any)=>String(x.role_id)===r.departmentId+':'+r.name)).length,assigned:active.length,symbol:best.symbol};
+}
 async function runGlobalMarketScan(env:Env,maxDeepScan=12){
  const startedAt=Date.now(),runId=uuid(),rows:GlobalInstrument[]=[],sourceHealth:Record<string,any>={};
  try{await env.DB.prepare('INSERT INTO global_market_scan_runs(run_id,started_at,status,discovered_count,scanned_count,source_health_json,summary_json) VALUES(?,?,?,?,?,?,?)').bind(runId,startedAt,'running',0,0,'{}','{}').run();}catch(error){sourceHealth['D1 run history']={status:'unavailable',error:String(error).slice(0,180)};}
@@ -284,9 +299,10 @@ async function runGlobalMarketScan(env:Env,maxDeepScan=12){
  const snapshot={runId,startedAt,completedAt,status:'completed',summary,sourceHealth,instruments,opportunities,history,opportunities24h};
  try{await env.KV_BINDING.put('global-market:universe:v1',JSON.stringify(snapshot));snapshotStored=true;}
  catch(error){snapshotError=String(error).slice(0,240);sourceHealth['Market Universe KV']={status:'unavailable',error:snapshotError};}
+ let runtimeAssignments:any={activated:0,assigned:0,reason:'Market snapshot unavailable'};if(snapshotStored){try{runtimeAssignments=await ensureDefaultRuntimeAgentAssignments(env,instruments,opportunities,completedAt);}catch(error){runtimeAssignments={activated:0,assigned:0,error:String(error).slice(0,180)};sourceHealth['Agent assignment manager']={status:'degraded',error:String(error).slice(0,180)};}}
  try{await env.DB.prepare('UPDATE global_market_scan_runs SET completed_at=?,status=?,discovered_count=?,scanned_count=?,source_health_json=?,summary_json=?,error=? WHERE run_id=?').bind(completedAt,snapshotStored?'completed':'degraded',instruments.length,deep.length,JSON.stringify(sourceHealth),JSON.stringify({...summary,snapshotStored}),snapshotError,runId).run();}catch(error){sourceHealth['D1 run history']={status:'unavailable',error:String(error).slice(0,180)};}
  try{await audit(env,'global.market.scan.completed','global-market-scanner',{runId,discovered:instruments.length,deepScanned:deep.length,opportunities:opportunities.length,snapshotStored,sourceHealth});}catch{}
- return {runId,startedAt,completedAt,status:snapshotStored?'completed':'degraded',snapshotStored,summary,sourceHealth,opportunities:opportunities.slice(0,100).map(x=>({...x.instrument,chart:x.chart,score:x.score,direction:x.direction,reasons:x.reasons}))};
+ return {runId,startedAt,completedAt,status:snapshotStored?'completed':'degraded',snapshotStored,summary,sourceHealth,runtimeAssignments,opportunities:opportunities.slice(0,100).map(x=>({...x.instrument,chart:x.chart,score:x.score,direction:x.direction,reasons:x.reasons}))};
 }
 
 
