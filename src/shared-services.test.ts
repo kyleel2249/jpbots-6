@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
-import {departments,allAgentRoles} from './departments';
+import {departments,allAgentRoles,platformServices} from './departments';
 import {evaluateIntegratedOpportunity} from './intelligence';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
@@ -23,7 +23,7 @@ describe('testing, memory and recovery',()=>{
 });
 
 describe('integrated department and bot registry',()=>{
- it('registers all specialist departments and generated agents',()=>{expect(departments).toHaveLength(17);expect(allAgentRoles.length).toBeGreaterThan(200);});
+ it('registers all specialist departments and generated agents',()=>{expect(departments).toHaveLength(12);expect(allAgentRoles).toHaveLength(162);expect(platformServices).toHaveLength(5);});
  it('registers scalping, day and advanced bot families',()=>{expect(botDepartmentCoverage.scalping).toBe(10);expect(botDepartmentCoverage.dayTrading).toBe(10);expect(botCatalog.length).toBe(39);});
  it('keeps every bot paper-only and fails closed on live requests',()=>{const bot=botCatalog[0];const r=validateBotStart(bot,{mode:'restricted-live',market:'spot',timeframe:'1m',configuredRiskPct:.1,testsPassed:true,capitalApproved:true,marketDataFresh:true,exchangeHealthy:true});expect(r.allowed).toBe(false);expect(r.liveEnabled).toBe(false);});
 });
