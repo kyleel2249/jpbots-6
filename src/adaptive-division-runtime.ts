@@ -67,7 +67,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     volatilityPct:scalpVolatility,volumeRatio:scalpVolumeRatio,scalpingVolumeRatio:scalpVolumeRatio,dayTradingVolumeRatio:dayVolumeRatio,
     scalpingVolatilityPct:scalpVolatility,dayTradingVolatilityPct:dayVolatility,
     scalpingFvg:scalpFvg,dayTradingFvg:dayFvg,scalpingLiquiditySweep:scalpSweep,dayTradingLiquiditySweep:daySweep,
-    scalpingMarketStructureShift:scalpMss,dayTradingMarketStructureShift:dayMss,scalpingVwapAligned,dayTradingVwapAligned:dayVwapAligned,
+    scalpingMarketStructureShift:scalpMss,dayTradingMarketStructureShift:dayMss,scalpingVwapAligned:scalpVwapAligned,dayTradingVwapAligned:dayVwapAligned,
     trendAlignment:scalpDirection==='long'?1:scalpDirection==='short'?-1:0,
     orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:dayVolatility,scalpingAtrPct:scalpVolatility,dayTradingAtrPct:dayVolatility,
     dataAgeMs:Math.max(0,now-book.timestamp),scalpingDataAgeMs:book.trades?.length&&Math.max(...book.trades.map(t=>t.timestamp))<=now?Math.max(0,now-Math.max(...book.trades.map(t=>t.timestamp))):Number.MAX_SAFE_INTEGER,dayTradingDataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
