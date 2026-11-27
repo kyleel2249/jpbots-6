@@ -1,6 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
 import {departments,allAgentRoles} from './departments';
+import {evaluateIntegratedOpportunity} from './intelligence';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance,authorizeTrade,authorizeOrder} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
@@ -32,4 +33,8 @@ describe('central decision and order authority',()=>{
  it('allows only paper-eligible trades after independent risk and evidence checks',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:90,reason:'aligned'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:healthy});expect(r.approved).toBe(true);expect(r.mode).toBe('paper');expect(r.liveExecutionEnabled).toBe(false);});
  it('central risk veto overrides positive agent evidence',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:99,reason:'strong'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:{...healthy,dailyLossPct:2}});expect(r.approved).toBe(false);expect(r.risk.allowNewEntries).toBe(false);});
  it('rejects order requests when live mode is requested or account is unreconciled',()=>{const r=authorizeOrder({signalApproved:true,capital:{...healthy,accountReconciled:false},market:'spot',quantity:1,minQuantity:.001,quantityStep:.001,liveRequested:true});expect(r.approved).toBe(false);expect(r.liveExecutionEnabled).toBe(false);});
+});
+
+describe('integrated market-to-decision pipeline',()=>{
+ it('combines market report, order-book pressure, agent evidence and capital veto',()=>{const r=evaluateIntegratedOpportunity({market:{symbol:'BTCUSDT',timestamp:1000,source:'test',timeframe:'1m',prices:[100,101,102,103,104,105],spreadBps:2,dataQuality:.95},book:{symbol:'BTCUSDT',timestamp:1000,mid:105,bids:[{price:104.99,quantity:8}],asks:[{price:105.01,quantity:2}],trades:[{price:105,quantity:4,aggressor:'buy',timestamp:1000}]},evidence:[{agent:'trend',stance:'bullish',confidence:90,reason:'aligned'}],capital:{equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true},signalValid:true,economicsValid:true,exchangeHealthy:true,maxAgeMs:5000,now:1000});expect(r.tradeable).toBe(true);expect(r.mode).toBe('paper');});
 });
