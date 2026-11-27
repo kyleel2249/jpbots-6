@@ -147,6 +147,6 @@ export function arbitrateAmdOpportunity(input:AmdArbitrationInput){
 }
 export function buildAmdForwardRecord(input:{symbol:string;assessment:AmdAssessment;observedAt:number;strategy?:{valid:boolean;side:'long'|'short'|'none';confidence:number};paperEnabled:boolean}){
  const arbitration=input.strategy?arbitrateAmdOpportunity({amd:input.assessment,strategy:input.strategy}):null;
- const qualified=input.assessment.qualified,status=!qualified?'rejected':!arbitration?.approved||!input.paperEnabled?'missed':'qualified';
+ const qualified=input.assessment.qualified,status=!qualified||(!!arbitration&&!arbitration.approved)?'rejected':!input.paperEnabled?'missed':'qualified';
  return {symbol:input.symbol,sessionDate:input.assessment.sessionDate,observedAt:input.observedAt,phase:input.assessment.phase,status,qualified,direction:input.assessment.direction,reason:[...input.assessment.reason,...(arbitration?.reasons??[]),...(!input.paperEnabled&&qualified?['Forward observer only: automatic paper entry is disabled']:[])],entryZone:input.assessment.entryZone,arbitration,paperOrderAttempted:false,liveExecutionEnabled:false};
 }
