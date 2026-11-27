@@ -47,6 +47,7 @@ describe('portfolio survival simulations',()=>{
 });
 
 describe('per-trade risk authority',()=>{
+ const healthy={equity:10000,peakEquity:10000,dailyLossPct:0,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:10,exchangeHealthy:true,dataFresh:true,accountReconciled:true};
  it('rejects a position whose proposed risk exceeds the central policy cap',()=>{const r=authorizeTrade({evidence:[{agent:'trend',stance:'bullish',confidence:99,reason:'strong'}],checks:{dataFresh:true,signalValid:true,economicsValid:true,exchangeHealthy:true},capital:healthy,proposedRiskPct:.5});expect(r.approved).toBe(false);expect(r.risk.reasons).toContain('proposed per-trade risk exceeds capital policy');});
  it('fails closed when a proposed trade omits its risk budget',()=>{const r=authorizeOrder({signalApproved:true,capital:healthy,proposedRiskPct:0,market:'spot',quantity:1,minQuantity:.001,quantityStep:.001});expect(r.approved).toBe(false);expect(r.capitalVeto).toBe(true);});
 });
