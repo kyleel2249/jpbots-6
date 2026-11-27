@@ -69,7 +69,8 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     vwapAligned,fundingExtreme:false
   };
 }
-export function buildLongPaperLevels(evidence:MarketEvidence,division:'scalping'|'day-trading'){
+export type LongPaperLevels={valid:false;reason:string}|{valid:true;entry:number;stop:number;target:number;stopDistancePct:number;netRewardRisk:number};
+export function buildLongPaperLevels(evidence:MarketEvidence,division:'scalping'|'day-trading'):LongPaperLevels{
   if(evidence.direction!=='long'&&division==='day-trading')return {valid:false,reason:'The spot-only division paper executor cannot open short positions'};
   if(evidence.scalpingDirection!=='long'&&division==='scalping')return {valid:false,reason:'The spot-only division paper executor cannot open short positions'};
   const price=evidence.price,atr=price*(division==='scalping'?(evidence.scalpingAtrPct??evidence.atrPct):(evidence.dayTradingAtrPct??evidence.atrPct))/100;
