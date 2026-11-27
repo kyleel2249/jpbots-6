@@ -1,4 +1,4 @@
-export type AdvancedTrade={price:number;quantity:number;aggressor:'buy'|'sell';timestamp:number};
+export type AdvancedTrade={price:number;quantity:number;aggressor:'buy'|'sell'|'unknown';timestamp:number};
 export type AdvancedBook={timestamp:number;mid:number;bids:{price:number;quantity:number}[];asks:{price:number;quantity:number}[]};
 export type AdvancedMarketInput={symbol:string;observedAt:number;closes:number[];volumes:number[];book:AdvancedBook;trades:AdvancedTrade[];maxSpreadBps?:number;maxVolatilityPct?:number};
 export type ConfidenceOutcome={confidence:number;correct:boolean};
@@ -26,7 +26,7 @@ export function assessAdvancedMarket(x:AdvancedMarketInput,calibration:Confidenc
  if(!x.book||!finite(x.book.timestamp)||!finite(x.book.mid)||x.book.mid<=0||!x.book.bids?.length||!x.book.asks?.length)errors.push('A timestamped two-sided order book is required');
  if(x.book?.bids?.some(l=>!finite(l.price)||l.price<=0||!finite(l.quantity)||l.quantity<0)||x.book?.asks?.some(l=>!finite(l.price)||l.price<=0||!finite(l.quantity)||l.quantity<0))errors.push('Invalid order-book levels');
  if(x.book?.bids?.length&&x.book?.asks?.length&&x.book.asks[0].price<=x.book.bids[0].price)errors.push('Crossed or locked order book');
- if(!Array.isArray(x.trades)||x.trades.some(t=>!finite(t.price)||t.price<=0||!finite(t.quantity)||t.quantity<0||!finite(t.timestamp)||!['buy','sell'].includes(t.aggressor)))errors.push('Invalid trade tape');
+ if(!Array.isArray(x.trades)||x.trades.some(t=>!finite(t.price)||t.price<=0||!finite(t.quantity)||t.quantity<0||!finite(t.timestamp)||!['buy','sell','unknown'].includes(t.aggressor)))errors.push('Invalid trade tape');
  if(errors.length)throw new Error(errors.join('; '));
  const closes=x.closes.slice(-120),returns=closes.slice(1).map((p,i)=>(p/closes[i]-1)*100),short=mean(returns.slice(-12)),long=mean(returns),trendPct=(closes.at(-1)!/closes[0]-1)*100,vol=stdev(returns),recentVol=stdev(returns.slice(-12)),volatilityRatio=vol>0?recentVol/vol:0;
  const spreadBps=(x.book.asks[0].price-x.book.bids[0].price)/x.book.mid*10000;
