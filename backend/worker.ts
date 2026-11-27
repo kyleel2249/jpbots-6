@@ -127,7 +127,7 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
   else{
    const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
    if(!amdSession.qualified)paperExecution={attempted:false,opened:false,reason:'AMD session gate rejected entry: '+amdSession.reason.join('; '),phase:amdSession.phase};
-   else if(amdSession.direction!==plan.side)paperExecution={attempted:false,opened:false,reason:'AMD direction does not agree with the independently validated multi-timeframe strategy',amdDirection:amdSession.direction,strategyDirection:plan.side};
+   else if(amdSession.direction!==(plan.side==='long'?'bullish':plan.side==='short'?'bearish':'neutral'))paperExecution={attempted:false,opened:false,reason:'AMD direction does not agree with the independently validated multi-timeframe strategy',amdDirection:amdSession.direction,strategyDirection:plan.side};
    else if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
    else if(!nearPlan||!geometry)paperExecution={attempted:false,opened:false,reason:'Current executable price is not sufficiently close to the planned entry or violates stop/target geometry'};
    else{const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:config.riskPct,feeBps:config.feeBps,strategy:'institutional-mtf-v1'});paperExecution={attempted:true,opened:!!order.position,...order};}
