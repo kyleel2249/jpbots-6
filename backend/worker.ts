@@ -213,7 +213,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   const symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol))return json({error:'Supported symbols: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT'},400);
   const bundle=await marketBundle(env,symbol);
-  const assessment=assessAdvancedMarket({symbol,observedAt:bundle.observedAt,closes:bundle.closes,volumes:bundle.snapshot.volumes,book:bundle.book,trades:bundle.book.trades});
+  const assessment=assessAdvancedMarket({symbol,observedAt:bundle.observedAt,closes:bundle.closes,volumes:bundle.snapshot.volumes??[],book:bundle.book,trades:bundle.book.trades??[]});
   await audit(env,'intelligence.advanced.assessed','advanced-intelligence-engine',{symbol,observedAt:assessment.observedAt,regime:assessment.regime.label,consensus:assessment.debate.consensus,vetoes:assessment.adversarial.vetoes.length});
   return json({assessment,mode:'research-only',liveTradingEnabled:false});
  }
