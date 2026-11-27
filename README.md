@@ -55,7 +55,7 @@ The registry API reports handler coverage explicitly. The scheduled market scann
 
 Requirements: Node.js 22+ and npm.
 
-1. Install dependencies: `npm install`.
+1. Install the exact locked dependencies: `npm ci`.
 2. Apply the local D1 schema: `npm run db:local`.
 3. Start the Worker in one terminal: `npm run dev:backend`.
 4. Start the dashboard in another terminal: `npm run dev`.
