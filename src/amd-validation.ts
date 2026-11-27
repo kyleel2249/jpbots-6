@@ -18,7 +18,7 @@ export type AmdReplayTrade={
 };
 export type AmdMetrics={
   trades:number;wins:number;losses:number;winRatePct:number;netPnl:number;returnPct:number;
-  expectancyR:number;profitFactor:number;maxDrawdownPct:number;averageR:number;
+  expectancyR:number;profitFactor:number|null;maxDrawdownPct:number;averageR:number;
   averageMfeR:number;averageMaeR:number;averageMfePct:number;averageMaePct:number;
   averageBarsHeld:number;longTrades:number;shortTrades:number;
 };
@@ -51,7 +51,7 @@ function metrics(trades:AmdReplayTrade[],initialEquity:number):{metrics:AmdMetri
  for(const t of trades.slice().sort((a,b)=>a.exitTime-b.exitTime)){equity+=t.netPnl;peak=Math.max(peak,equity);const dd=peak>0?(peak-equity)/peak*100:0;maxDD=Math.max(maxDD,dd);curve.push({time:t.exitTime,equity,drawdownPct:dd});}
  const wins=trades.filter(t=>t.netR>0),losses=trades.filter(t=>t.netR<=0),grossWin=wins.reduce((s,t)=>s+t.netPnl,0),grossLoss=Math.abs(losses.reduce((s,t)=>s+t.netPnl,0));
  const net=trades.reduce((s,t)=>s+t.netPnl,0),rs=trades.map(t=>t.netR),mfe=trades.map(t=>t.mfeR),mae=trades.map(t=>t.maeR);
- return {metrics:{trades:trades.length,wins:wins.length,losses:losses.length,winRatePct:trades.length?wins.length/trades.length*100:0,netPnl:net,returnPct:net/initialEquity*100,expectancyR:average(rs),profitFactor:grossLoss>0?grossWin/grossLoss:grossWin>0?Number.POSITIVE_INFINITY:0,maxDrawdownPct:maxDD,averageR:average(rs),averageMfeR:average(mfe),averageMaeR:average(mae),averageMfePct:average(trades.map(t=>t.entry>0?t.mfe/t.entry*100:0)),averageMaePct:average(trades.map(t=>t.entry>0?t.mae/t.entry*100:0)),averageBarsHeld:average(trades.map(t=>t.barsHeld)),longTrades:trades.filter(t=>t.side==='long').length,shortTrades:trades.filter(t=>t.side==='short').length},equityCurve:curve};
+ return {metrics:{trades:trades.length,wins:wins.length,losses:losses.length,winRatePct:trades.length?wins.length/trades.length*100:0,netPnl:net,returnPct:net/initialEquity*100,expectancyR:average(rs),profitFactor:grossLoss>0?grossWin/grossLoss:grossWin>0?null:0,maxDrawdownPct:maxDD,averageR:average(rs),averageMfeR:average(mfe),averageMaeR:average(mae),averageMfePct:average(trades.map(t=>t.entry>0?t.mfe/t.entry*100:0)),averageMaePct:average(trades.map(t=>t.entry>0?t.mae/t.entry*100:0)),averageBarsHeld:average(trades.map(t=>t.barsHeld)),longTrades:trades.filter(t=>t.side==='long').length,shortTrades:trades.filter(t=>t.side==='short').length},equityCurve:curve};
 }
 function regime(candles:StrategyCandle[]):'bullish'|'bearish'|'ranging'{if(candles.length<2)return 'ranging';const first=candles[0].open,last=candles[candles.length-1].close,change=first>0?(last-first)/first:0;return change>.003?'bullish':change<-.003?'bearish':'ranging';}
 export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdValidationConfig>={}):AmdReplayResult{
@@ -103,7 +103,7 @@ function splitByLocalDays(candles:StrategyCandle[],timezone:string,ratio:number)
 export type AmdOptimisationCandidate={config:AmdValidationConfig;train:AmdMetrics;holdout:AmdMetrics;score:number;robust:boolean};
 export function optimiseAmdParameters(candles:StrategyCandle[],options:{timezones?:string[];sweepSensitivitiesBps?:number[];arrayStrengths?:number[];minTrainTrades?:number;minHoldoutTrades?:number}={}){
  const timezones=[...new Set(options.timezones??[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London','America/New_York'])].slice(0,6);
- const sweeps=options.sweepSensitivitiesBps??[0,3,5,10],strengths=options.arrayStrengths??[65,70,75,80];
+ const sweeps=(options.sweepSensitivitiesBps??[0,3,5,10]).slice(0,6),strengths=(options.arrayStrengths??[65,70,75,80]).slice(0,6);
  const candidates:AmdOptimisationCandidate[]=[];
  for(const timezone of timezones)for(const sweep of sweeps)for(const strength of strengths){
   const config={...DEFAULT_AMD_VALIDATION_CONFIG,timezone,sweepSensitivityBps:sweep,minArrayStrength:strength};
