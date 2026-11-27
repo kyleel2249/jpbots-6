@@ -1,5 +1,6 @@
 import { allAgentRoles, departments, platformServices } from '../src/departments';
 import { buildMarketReport, evaluateIntegratedOpportunity } from '../src/intelligence';
+import { runEmaBacktest } from '../src/backtesting';
 import type { Snapshot } from '../src/intelligence';
 import { analyseOrderBook } from '../src/shared-services';
 import type { Evidence, OrderBookSnapshot, CapitalState } from '../src/shared-services';
@@ -89,6 +90,21 @@ async function route(request:Request,env:Env):Promise<Response>{
   return json({chain:'solana',source:'DexScreener',pairs:(pairs||[]).map(p=>({pairAddress:p.pairAddress,dexId:p.dexId,baseToken:p.baseToken,quoteToken:p.quoteToken,priceUsd:Number(p.priceUsd||0),liquidityUsd:Number(p.liquidity?.usd||0),volume24h:Number(p.volume?.h24||0),priceChange24h:Number(p.priceChange?.h24||0),url:p.url}))});
  }
  if(path==='/api/portfolio'&&request.method==='GET'){const row=await env.DB.prepare("SELECT * FROM portfolio_accounts WHERE account_id='primary'").first<any>();return json({configured:!!row,reconciled:row?.reconciled===1,account:row?{equity:row.equity,peakEquity:row.peak_equity,dailyLossPct:row.daily_loss_pct,weeklyLossPct:row.weekly_loss_pct,monthlyLossPct:row.monthly_loss_pct,openPositions:row.open_positions,leverage:row.leverage,marginUtilisationPct:row.margin_utilisation_pct}:null,liveTradingEnabled:false});}
+ if(path==='/api/backtest'&&request.method==='POST'){
+  const body=await request.json().catch(()=>({})) as any;
+  const symbol=String(body.symbol||'BTCUSDT').toUpperCase(),interval=String(body.interval||'5m'),fastPeriod=Number(body.fastPeriod||9),slowPeriod=Number(body.slowPeriod||21),feeBps=Number(body.feeBps??10),slippageBps=Number(body.slippageBps??5),initialEquity=Number(body.initialEquity||10000);
+  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!['1m','3m','5m','15m','30m','1h','4h','1d'].includes(interval))return json({error:'Invalid symbol or interval'},400);
+  const raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+symbol+'&interval='+interval+'&limit=1000');
+  const candles=raw.map(k=>({openTime:k[0],closeTime:k[6],open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
+  const config={fastPeriod,slowPeriod,feeBps,slippageBps,initialEquity},result=runEmaBacktest(candles,config);
+  if(!result.valid)return json({error:'Backtest validation failed',reasons:result.errors},422);
+  const split=Math.floor(candles.length*.7),inSample=runEmaBacktest(candles.slice(0,split),config),outOfSample=runEmaBacktest(candles.slice(split),config),runId=uuid(),completedAt=Date.now();
+  const response={runId,symbol,interval,source:'Binance Spot historical candles',strategy:'EMA crossover',strategyVersion:'1.0.0',candleCount:candles.length,config,metrics:result.metrics,walkForward:{inSample:inSample.metrics,outOfSample:outOfSample.metrics,splitIndex:split},trades:result.trades,liveTradingEnabled:false,qualification:'research-only; backtest alone cannot qualify a bot for live trading'};
+  await env.DB.prepare('INSERT INTO backtest_runs(run_id,symbol,interval_name,strategy_id,strategy_version,started_at,completed_at,config_json,metrics_json,result_json) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(runId,symbol,interval,'ema-crossover','1.0.0',completedAt,completedAt,JSON.stringify(config),JSON.stringify(result.metrics),JSON.stringify(response)).run();
+  await audit(env,'backtest.completed','historical-data-and-backtest-service',{runId,symbol,interval,metrics:result.metrics});
+  return json(response);
+ }
+ if(path==='/api/backtests'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT run_id,symbol,interval_name,strategy_id,strategy_version,completed_at,metrics_json FROM backtest_runs ORDER BY completed_at DESC LIMIT 50').all();return json({runs:rows.results});}
  if(path==='/api/scan'&&request.method==='POST'){
   const body=await request.json().catch(()=>({})) as {symbols?:string[]};const symbols=(body.symbols??['BTCUSDT','ETHUSDT','SOLUSDT']).filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,5);
   if(!symbols.length)return json({error:'No valid symbols supplied'},400);
