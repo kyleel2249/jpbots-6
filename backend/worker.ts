@@ -7,6 +7,7 @@ import type { Evidence, OrderBookSnapshot, CapitalState } from '../src/shared-se
 import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 import { runDepartmentCouncil, type WorkersAiBinding } from '../src/agent-runtime';
 import { analyseInstitutionalMarket } from '../src/institutional-intelligence';
+import { analyseAmdSession } from '../src/amd-session-strategy';
 import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardInstitutionalStrategy, defaultInstitutionalStrategyConfig, type Timeframes } from '../src/institutional-strategy';
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 
@@ -18,7 +19,7 @@ interface DurableState { storage:DurableStorage; id:{toString():string} }
 interface DurableId { toString():string }
 interface DurableNamespace { idFromName(name:string):DurableId; get(id:DurableId):{fetch(input:Request|string,init?:RequestInit):Promise<Response>} }
 type KVBinding={put(key:string,value:string,options?:{expirationTtl?:number;expiration?:number;metadata?:unknown}):Promise<void>};
-interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string }
+interface Env { DB:D1Database; KV_BINDING:KVBinding; ORCHESTRATOR:DurableNamespace; BINANCE_BASE_URL?:string; DEXSCREENER_BASE_URL?:string; AI?:WorkersAiBinding; AI_ENABLED?:string; AI_MODEL?:string; OPERATOR_API_TOKEN?:string; AUTO_PAPER_ENABLED?:string; AMD_SESSION_TIMEZONE?:string }
 type Kline=[number,string,string,string,string,string,number,string,string,string,string,string];
 type Task={id:string;kind:'market-scan'|'institutional-role'|'institutional-scan'|'institutional-strategy-scan';symbol:string;createdAt:number;attempts?:number;roleId?:string;correlationId?:string;payload?:any};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
@@ -114,7 +115,7 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
  }));
  const tf:Timeframes={'5m':fetched[0],'15m':fetched[1],'1h':fetched[2],'4h':fetched[3]},account=await getPaperAccount(env),equity=Number(account?.equity??0);
  const config={...defaultInstitutionalStrategyConfig,riskPct:defaultInstitutionalStrategyConfig.riskPct};
- const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());
+ const plan=buildInstitutionalTradePlan(tf,equity,config,Date.now());\n const amdSession=analyseAmdSession(tf['5m'],Date.now(),env.AMD_SESSION_TIMEZONE||'UTC');
  const replay=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000);
  const walkForward=walkForwardInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},config,10000,4);
  const oos=walkForward.outOfSample?.metrics??null,returns=(replay.valid?replay.trades:[]).map(t=>t.netPct),monteCarlo=monteCarloRisk(returns,2000,100,42),costSensitivity=[0,5,10].map(extraBps=>{const scenario=replayInstitutionalStrategy(tf['5m'],{'15m':tf['15m'],'1h':tf['1h'],'4h':tf['4h']},{...config,slippageBps:config.slippageBps+extraBps},10000);return {extraSlippageBps:extraBps,metrics:scenario.metrics};}),qualification={status:'research-only',liveExecutionEnabled:false,checks:{replayValid:replay.valid,walkForwardValid:walkForward.valid,minimumReplayTrades:(replay.metrics?.tradeCount??0)>=100,minimumOosTrades:(oos?.tradeCount??0)>=50,positiveOosExpectancy:(oos?.expectancy??0)>0,drawdownWithinPolicy:(oos?.maxDrawdownPct??100)<=5},reasons:[] as string[]};
@@ -124,15 +125,15 @@ async function runInstitutionalStrategyWorkflow(env:Env,symbol:string,autoPaperR
   if(env.AUTO_PAPER_ENABLED!=='true')paperExecution={attempted:false,opened:false,reason:'Automatic paper entries are disabled by the AUTO_PAPER_ENABLED safety switch'};
   else{
    const current=await marketBundle(env,symbol),nearPlan=plan.entry!==null&&Math.abs(current.book.mid-plan.entry)/plan.entry<=.0015,geometry=plan.stop!==null&&plan.target!==null&&plan.stop<current.book.mid&&current.book.mid<plan.target;
-   if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
+   if(!amdSession.qualified)paperExecution={attempted:false,opened:false,reason:'AMD session gate rejected entry: '+amdSession.reason.join('; '),phase:amdSession.phase};\n   else if(amdSession.direction!==plan.side)paperExecution={attempted:false,opened:false,reason:'AMD direction does not agree with the independently validated multi-timeframe strategy',amdDirection:amdSession.direction,strategyDirection:plan.side};\n   else if(!plan.valid||plan.side!=='long')paperExecution={attempted:false,opened:false,reason:'No valid long institutional setup; paper engine currently supports Spot-long only',blockers:plan.reasons};
    else if(!nearPlan||!geometry)paperExecution={attempted:false,opened:false,reason:'Current executable price is not sufficiently close to the planned entry or violates stop/target geometry'};
    else{const order=await createPaperOrder(env,{symbol,stopPrice:plan.stop,targetPrice:plan.target,riskPct:config.riskPct,feeBps:config.feeBps,strategy:'institutional-mtf-v1'});paperExecution={attempted:true,opened:!!order.position,...order};}
   }
  }
- const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,monteCarlo,costSensitivity,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
+ const result={runId,symbol,createdAt,source:'Binance Spot historical OHLCV',amdSession,timeframes:Object.fromEntries(intervals.map(k=>[k,{candles:tf[k].length,lastClose:tf[k].at(-1)?.close}])),plan,replay:replay.valid?{metrics:replay.metrics,trades:replay.trades.slice(-100)}:{errors:replay.errors},walkForward,monteCarlo,costSensitivity,qualification,paperExecution,liveExecutionEnabled:false,report:'The engine checked four timeframes, built a structure-based entry/stop/target proposal, replayed historical candles with conservative stop-first handling when stop and target are touched in the same candle, and evaluated rolling walk-forward windows plus a final untouched out-of-sample segment. This is research evidence, not a live-trading authorisation.'};
  await env.DB.prepare('INSERT INTO institutional_strategy_runs(run_id,symbol,mode,strategy_version,created_at,result_json,qualification_json) VALUES(?,?,?,?,?,?,?)').bind(runId,symbol,autoPaperRequested?'automatic-paper':'analysis','institutional-mtf-v1',createdAt,JSON.stringify(result),JSON.stringify(qualification)).run();
  await env.DB.batch(Object.entries(qualification.checks).map(([stage,passed])=>env.DB.prepare('INSERT INTO strategy_qualification_evidence(evidence_id,strategy_id,version,stage,passed,metrics_json,created_at) VALUES(?,?,?,?,?,?,?)').bind(uuid(),'institutional-mtf','1.0.0',stage,passed?1:0,JSON.stringify({runId,replay:replay.metrics,oos,walkForward:walkForward.aggregate}),createdAt)));
- await env.KV_BINDING.put('institutional:latest:'+symbol,JSON.stringify({runId,createdAt,qualification,plan,summary:result.report}),{expirationTtl:86400});
+ await env.KV_BINDING.put('institutional:latest:'+symbol,JSON.stringify({runId,createdAt,qualification,plan,amdSession,summary:result.report}),{expirationTtl:86400});
  await audit(env,'institutional.strategy.completed','institutional-mtf-strategy-engine',{runId,symbol,valid:plan.valid,autoPaperRequested,paperOpened:paperExecution.opened===true,qualification});
  return result;
 }
