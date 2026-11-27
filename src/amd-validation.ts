@@ -139,7 +139,7 @@ export function walkForwardAmd(candles:StrategyCandle[],folds=4){
  const timezone=DEFAULT_AMD_TIMEZONE,{train:allTrain,test:finalTest}=splitByLocalDays(candles,timezone,.8);
  const dates=[...new Set(allTrain.map(c=>local(c,timezone).date))].sort(),chunk=Math.max(1,Math.floor(dates.length/(n+1)));
  for(let i=0;i<n;i++){const trainEnd=chunk*(i+1),testEnd=Math.min(dates.length,trainEnd+chunk),trainDates=new Set(dates.slice(0,trainEnd)),testDates=new Set(dates.slice(trainEnd,testEnd)),train=allTrain.filter(c=>trainDates.has(local(c,timezone).date)),test=allTrain.filter(c=>testDates.has(local(c,timezone).date));
-  const opt=optimiseAmdParameters(train,{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra'],sweepSensitivitiesBps:[0,5],arrayStrengths:[65,80],minTrainTrades:5,minHoldoutTrades:2});
+  const opt=optimiseAmdParameters(train,{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra'],sweepSensitivitiesBps:[0,5],arrayStrengths:[70],minTrainTrades:5,minHoldoutTrades:2});
   const selected=opt.best?.config??null,validation=selected?replayAmdSessions(test,selected):null,trainResult=selected?replayAmdSessions(train,selected):null;
   results.push({fold:i+1,trainCandles:train.length,testCandles:test.length,selected,train:trainResult?.metrics??null,test:validation?.metrics??null,passed:!!validation?.metrics&&validation.metrics.trades>=3&&validation.metrics.expectancyR>0});
  }
