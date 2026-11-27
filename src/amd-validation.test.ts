@@ -25,7 +25,7 @@ describe('AMD validation suite',()=>{
  });
  it('compares timezone, sweep and PD Array parameters using chronological holdout',()=>{
   const result=optimiseAmdParameters(series(24),{timezones:['UTC','Africa/Accra'],sweepSensitivitiesBps:[0,5],arrayStrengths:[65,75],minTrainTrades:2,minHoldoutTrades:1});
-  expect(result.split.holdoutUntouchedDuringSelection).toBe(true);expect(result.candidateCount).toBe(8);
+  expect(result.split.holdoutUntouchedDuringSelection).toBe(true);expect(result.candidateCount).toBe(8);expect(result.invalidTimezones).toEqual([]);
   expect(result.best?.holdout.trades).toBeGreaterThan(0);
  });
  it('runs sequential walk-forward folds and preserves a final untouched segment',()=>{
