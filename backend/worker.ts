@@ -196,7 +196,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json({error:'Invalid market symbol'},400);
   const bundle=await marketBundle(env,symbol),raw=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval=1m&limit=120');
   const candles=raw.map(k=>({openTime:Number(k[0]),closeTime:Number(k[6]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5])}));
-  const analysis=analyseInstitutionalMarket({symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades:bundle.book.trades});
+  const analysis=analyseInstitutionalMarket({symbol,observedAt:bundle.observedAt,price:bundle.lastPrice,candles,book:bundle.book,trades:bundle.book.trades??[]});
   const analysisId=uuid(),createdAt=Date.now(),tasks=analysis.findings.map(f=>({id:uuid(),kind:'institutional-role' as const,symbol,createdAt,roleId:'institutional:'+f.agent,correlationId:analysisId,payload:f}));
   await env.DB.batch([
    env.DB.prepare('INSERT INTO institutional_analyses(analysis_id,symbol,observed_at,source,result_json) VALUES(?,?,?,?,?)').bind(analysisId,symbol,createdAt,'Binance Spot public REST',JSON.stringify(analysis)),
@@ -282,7 +282,7 @@ export class AgentOrchestrator {
      await this.env.DB.prepare("INSERT INTO agent_tasks(id,role_id,task_type,status,created_at,updated_at,payload_json,result_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,result_json=excluded.result_json").bind(task.id,'market:Market Data Intelligence','market-scan','completed',task.createdAt,Date.now(),JSON.stringify(task),JSON.stringify(result)).run();
     }else if(task.kind==='institutional-role'&&task.roleId&&task.correlationId){
      const finding=task.payload,rt:RuntimeTask={id:task.id,roleId:task.roleId,departmentId:'institutional',kind:'institutional-role-analysis',symbol:task.symbol,correlationId:task.correlationId,createdAt:task.createdAt,attempts:task.attempts??0,payload:{finding}};
-     const handler=handlerForInstitutionalFinding(finding,rt),evidence=await handler(rt);
+     const evidence=handlerForInstitutionalFinding(finding,rt);
      await this.env.DB.batch([
       this.env.DB.prepare('INSERT OR REPLACE INTO agent_evidence(evidence_id,correlation_id,role_id,observed_at,expires_at,confidence,stance,evidence_json) VALUES(?,?,?,?,?,?,?,?)').bind(evidence.id,task.correlationId,task.roleId,evidence.observedAt,evidence.expiresAt,evidence.confidence,evidence.stance,JSON.stringify(evidence)),
       this.env.DB.prepare("UPDATE agent_tasks SET status='completed',updated_at=?,result_json=? WHERE id=?").bind(Date.now(),JSON.stringify(evidence),task.id),
