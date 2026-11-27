@@ -63,3 +63,21 @@ export function calculateOrderFlowImbalance(events:QueueEvent[]){let bid=0,ask=0
 export type PerformanceSample={netPnl:number;grossProfit:number;grossLoss:number;maxDrawdownPct:number;trades:number;expectancy:number;sharpe?:number;sortino?:number;executionSlippageBps:number;signalCalibrationError:number;regimeStable:boolean;dataReliable:boolean};
 export function classifyPerformance(x:PerformanceSample){const profitFactor=x.grossLoss>0?x.grossProfit/x.grossLoss:x.grossProfit>0?Infinity:0;const failures:string[]=[];if(x.trades<100)failures.push('sample too small');if(x.netPnl<=0||x.expectancy<=0)failures.push('net expectancy not positive');if(profitFactor<1.2)failures.push('profit factor below threshold');if(x.maxDrawdownPct>12)failures.push('drawdown too high');if(x.executionSlippageBps>15)failures.push('execution slippage too high');if(x.signalCalibrationError>.2)failures.push('confidence calibration error');if(!x.regimeStable)failures.push('regime instability');if(!x.dataReliable)failures.push('data reliability failure');const status=failures.length?'probation-or-restricted':x.trades>=300&&x.maxDrawdownPct<8&&profitFactor>=1.5?'qualified-review':'testing';return {status,profitFactor,failures,liveEligible:false as const};}
 export function agentTrustScore(input:{successfulTasks:number;failedTasks:number;policyViolations:number;dataErrors:number;decisionReversals:number}){const total=input.successfulTasks+input.failedTasks;const reliability=total?input.successfulTasks/total:0;return Math.max(0,Math.min(100,reliability*100-input.policyViolations*15-input.dataErrors*5-input.decisionReversals*2));}
+
+/** The single decision boundary strategies, replications and bots must call before any order request. */
+export function authorizeTrade(input:{evidence:Evidence[];checks:{dataFresh:boolean;signalValid:boolean;economicsValid:boolean;exchangeHealthy:boolean};capital:CapitalState;policy?:CapitalPolicy;scalping?:BotGuardInput}){
+ const risk=capitalAuthority(input.capital,input.policy??defaultCapitalPolicy);
+ const arbitration=arbitrateTradeEvidence(input.evidence,{...input.checks,riskApproved:risk.allowNewEntries,exchangeHealthy:input.checks.exchangeHealthy&&input.capital.exchangeHealthy,dataFresh:input.checks.dataFresh&&input.capital.dataFresh});
+ const scalp=input.scalping?scalpingGuard(input.scalping):{allowed:true,reasons:[] as string[]};
+ const approved=arbitration.decision==='eligible-for-risk-authorisation'&&risk.allowNewEntries&&scalp.allowed;
+ return {approved,decision:approved?'paper-order-eligible':'rejected',mode:'paper' as const,liveExecutionEnabled:false as const,risk,arbitration,scalping:scalp,finalAuthority:'capital-protection'};
+}
+export function authorizeOrder(input:{signalApproved:boolean;capital:CapitalState;market:'spot'|'margin'|'usdt-m'|'coin-m'|'usdc-m';quantity:number;price?:number;minQuantity:number;quantityStep:number;priceTick?:number;liveRequested?:boolean}){
+ const risk=capitalAuthority(input.capital),errors=[...risk.reasons];
+ if(!input.signalApproved)errors.push('signal not approved');if(input.liveRequested)errors.push('live execution disabled');
+ if(!Number.isFinite(input.quantity)||input.quantity<input.minQuantity)errors.push('quantity below minimum or invalid');
+ if(!Number.isFinite(input.quantityStep)||input.quantityStep<=0||Math.abs(input.quantity/input.quantityStep-Math.round(input.quantity/input.quantityStep))>1e-8)errors.push('quantity precision invalid');
+ if(input.price!==undefined&&(!Number.isFinite(input.price)||input.price<=0))errors.push('price invalid');
+ if(input.priceTick!==undefined&&(!Number.isFinite(input.priceTick)||input.priceTick<=0||input.price===undefined||Math.abs(input.price/input.priceTick-Math.round(input.price/input.priceTick))>1e-8))errors.push('price precision invalid');
+ return {approved:errors.length===0,errors,market:input.market,quantity:input.quantity,mode:'paper' as const,liveExecutionEnabled:false as const,capitalVeto:!risk.allowNewEntries};
+}
