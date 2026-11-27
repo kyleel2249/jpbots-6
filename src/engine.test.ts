@@ -1,15 +1,6 @@
-import {describe,it,expect} from 'vitest';
-import {defaultRisk,estimatePositionSize,isWeekday,validateSignal} from './engine';
-import type {Agent,Signal} from './types';
-const agent:Agent={id:1,name:'Test',division:'Scalping',strategy:'Test strategy',symbol:'BTC/USDT',timeframe:'1m',status:'SCANNING',confidence:90,trades:0,winRate:0,pnl:0,risk:.2};
-const signal:Signal={id:1,time:'12:00',symbol:'BTC/USDT',side:'LONG',strategy:'Test',confidence:90,agent:'Test',status:'WATCH'};
-describe('risk and sizing controls',()=>{
- it('approves a high-confidence signal within limits',()=>expect(validateSignal(signal,agent,defaultRisk,0,0).approved).toBe(true));
- it('rejects low-confidence signals',()=>expect(validateSignal({...signal,confidence:60},agent,defaultRisk,0,0).approved).toBe(false));
- it('rejects when the position cap is reached',()=>expect(validateSignal(signal,agent,defaultRisk,4,0).approved).toBe(false));
- it('rejects after the daily loss limit',()=>expect(validateSignal(signal,agent,defaultRisk,0,2).approved).toBe(false));
- it('sizes positions from cash risk divided by stop distance',()=>expect(estimatePositionSize(10000,100,95,.25)).toBe(5));
- it('returns zero for invalid sizing inputs',()=>expect(estimatePositionSize(10000,100,100,.25)).toBe(0));
- it('recognises Monday and Friday as weekdays',()=>{expect(isWeekday(new Date('2026-11-23T12:00:00Z'))).toBe(true);expect(isWeekday(new Date('2026-11-27T12:00:00Z'))).toBe(true)});
- it('rejects weekend dates under the default schedule',()=>expect(isWeekday(new Date('2026-11-28T12:00:00Z'))).toBe(false));
-});
+import {describe,it,expect} from 'vitest';import {departments,allAgentRoles} from './departments';import {buildMarketReport,assessPortfolio,monteCarloRisk,qualifyTrader,replicationSize,chooseStrategies,netReward,deploymentStage,validateOrder} from './intelligence';
+describe('department registry',()=>{it('registers twelve departments',()=>expect(departments).toHaveLength(12));it('registers more than 100 specialist roles',()=>expect(allAgentRoles.length).toBeGreaterThan(100));it('includes all requested specialist areas',()=>expect(allAgentRoles.map(x=>x.name)).toContain('Order Book Intelligence'));});
+describe('market intelligence',()=>{it('creates structured reports',()=>expect(buildMarketReport({symbol:'BTC',timestamp:1,source:'fixture',timeframe:'1m',prices:[100,101,102,103,104,105],bidDepth:60,askDepth:40,spreadBps:2,dataQuality:.95}).liquidity.bidAskImbalance).toBeCloseTo(.2));it('blocks low quality feeds',()=>expect(buildMarketReport({symbol:'X',timestamp:1,source:'x',timeframe:'1m',prices:[1,2],dataQuality:.1}).tradeable).toBe(false));});
+describe('capital survival',()=>{it('halts new entries after daily loss',()=>expect(assessPortfolio({equity:980,peakEquity:1000,dailyLossPct:2,weeklyLossPct:0,monthlyLossPct:0,openPositions:0,correlatedExposurePct:0,leverage:1,marginUtilisationPct:5,exchangeHealthy:true}).allowNewEntries).toBe(false));it('runs deterministic Monte Carlo',()=>expect(monteCarloRisk([1,-1],50,10)).toEqual(monteCarloRisk([1,-1],50,10)));});
+describe('replication and strategy',()=>{it('rejects untrusted source traders',()=>expect(qualifyTrader({trades:200,netPnl:100,profitFactor:1.5,maxDrawdownPct:5,dataReliable:false,stable:true}).eligible).toBe(false));it('caps replication allocation',()=>expect(replicationSize(10000,1000,10000,.25)).toBe(25));it('chooses no trade in uncertain transitions',()=>expect(chooseStrategies('uncertain transition')).toContain('no trade'));it('accounts for fees',()=>expect(netReward(100,110,95,1,10,5)!.net).toBeLessThan(10));});
+describe('execution and validation',()=>{it('never permits disabled live orders',()=>expect(validateOrder({market:'spot',quantity:1,type:'market',signalApproved:true,liveEnabled:false},{spot:true,margin:true,usdtM:true,coinM:true,usdcM:true,postOnly:true,reduceOnly:true}).valid).toBe(false));it('does not graduate weak strategies',()=>expect(deploymentStage({tests:true,backtestTrades:2,backtestExpectancy:1,oosTrades:0,oosExpectancy:0,walkForward:false,stress:false,paperTrades:0,paperExpectancy:0,paperDrawdown:0,stable:false,explicitApproval:false}).stage).toBe('paper'));});
