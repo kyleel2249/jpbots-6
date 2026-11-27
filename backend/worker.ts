@@ -309,13 +309,20 @@ async function closeDivisionPaperPosition(env:Env,position:any,book:OrderBookSna
 }
 async function openDivisionPaperPosition(env:Env,division:TradingDivision,assessment:any,evidence:MarketEvidence,book:OrderBookSnapshot,policy:DivisionPolicy){
  const account=await divisionAccount(env,division);if(!account)return {opened:false,reason:'division paper account not initialized'};
+ const today=new Date().toISOString().slice(0,10);
+ if(account.day_key!==today){await env.DB.prepare('UPDATE division_paper_accounts SET day_key=?,day_start_equity=equity,daily_loss_pct=0,updated_at=? WHERE division_id=?').bind(today,Date.now(),division).run();account.day_key=today;account.day_start_equity=Number(account.equity);account.daily_loss_pct=0;}
  if(Number(account.daily_loss_pct)>=policy.maxDailyLossPct)return {opened:false,reason:'division daily loss limit reached'};
  if(Number(account.open_positions)>=policy.maxOpenPositions)return {opened:false,reason:'division open-position limit reached'};
  if(Number(account.equity)<=0)return {opened:false,reason:'division equity depleted'};
  const existing=await env.DB.prepare("SELECT position_id FROM division_paper_positions WHERE division_id=? AND symbol=? AND status IN ('open','closing') LIMIT 1").bind(division,evidence.symbol).first<any>();
  if(existing)return {opened:false,reason:'division already has an open position in this instrument'};
  const levels=buildLongPaperLevels(evidence,division);if(!levels.valid)return {opened:false,reason:levels.reason};
- const feeBps=10,riskPct=policy.maxRiskPerTradePct,plan=planPaperLongEntry({book,equity:Number(account.equity),stopPrice:levels.stop,targetPrice:levels.target,riskPct,feeBps,maxRiskPct:policy.maxRiskPerTradePct,now:Date.now(),maxSlippageBps:25});
+ const capitalLimitUsd=policy.maxRiskPerTradePct>0?Number(assessment.riskBudgetUsd)/(policy.maxRiskPerTradePct/100):0,effectiveEquity=Math.min(Number(account.equity),capitalLimitUsd);
+ if(!(effectiveEquity>0))return {opened:false,reason:'division allocation has no deployable capital'};
+ const dayStart=Number(account.day_start_equity||account.equity),reserved=await env.DB.prepare("SELECT COALESCE(SUM(json_extract(payload_json,'$.riskCash')),0) AS risk_cash FROM division_paper_positions WHERE division_id=? AND status IN ('open','closing')").bind(division).first<any>();
+ const reservedRisk=Number(reserved?.risk_cash||0),proposedRisk=effectiveEquity*policy.maxRiskPerTradePct/100;
+ if(dayStart<=0||Number(account.daily_loss_pct)+(reservedRisk+proposedRisk)/dayStart*100>policy.maxDailyLossPct)return {opened:false,reason:'division daily loss budget is reserved by realised loss and open-position stop risk'};
+ const feeBps=10,riskPct=policy.maxRiskPerTradePct,plan=planPaperLongEntry({book,equity:effectiveEquity,stopPrice:levels.stop,targetPrice:levels.target,riskPct,feeBps,maxRiskPct:policy.maxRiskPerTradePct,now:Date.now(),maxSlippageBps:25});
  if(!plan.valid||plan.averageFillPrice===null)return {opened:false,reason:'division paper risk engine rejected the order',vetoes:plan.errors};
  const now=Date.now(),positionId=uuid(),fillId=uuid(),dayKey=new Date(now).toISOString().slice(0,10);
  const reservation=await env.DB.prepare("UPDATE division_paper_accounts SET open_positions=open_positions+1,updated_at=? WHERE division_id=? AND open_positions<? AND equity>0 AND daily_loss_pct<?").bind(now,division,policy.maxOpenPositions,policy.maxDailyLossPct).run();
