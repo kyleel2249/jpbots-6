@@ -46,9 +46,9 @@ export function analyseAmdSession(candles:StrategyCandle[],now=Date.now(),timezo
  if(phase==='accumulation')reasons.push('Accumulation phase: entries are strictly forbidden');
  if(phase==='manipulation')reasons.push('Manipulation phase: entries are strictly forbidden');
  if(phase==='distribution'&&manipulation.length<6)reasons.push('Insufficient completed manipulation-phase candles to establish the range');
- const last=distribution.at(-1),history=[...manipulation,...distribution];
+ const last=distribution.at(-1);
  const sensitivity=Math.max(0,Math.min(50,options.sweepSensitivityBps??0))/10000;
- const aTR=atr(history),sweptHigh=mr.high!==null&&distribution.some(c=>c.high>mr.high!*(1+sensitivity)&&c.close<mr.high!),sweptLow=mr.low!==null&&distribution.some(c=>c.low<mr.low!*(1-sensitivity)&&c.close>mr.low!);
+ const sweptHigh=mr.high!==null&&distribution.some(c=>c.high>mr.high!*(1+sensitivity)&&c.close<mr.high!),sweptLow=mr.low!==null&&distribution.some(c=>c.low<mr.low!*(1-sensitivity)&&c.close>mr.low!);
  let cisd:AmdDirection='neutral',mss:AmdDirection='neutral',confirmed:AmdDirection='neutral',lastStructureTime=-1;
  if(manipulation.length>=2){
   const bearish=manipulation.slice().reverse().find(c=>c.close<c.open),bullish=manipulation.slice().reverse().find(c=>c.close>c.open);
