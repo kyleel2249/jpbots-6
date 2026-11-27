@@ -1,0 +1,58 @@
+export type AdvancedTrade={price:number;quantity:number;aggressor:'buy'|'sell';timestamp:number};
+export type AdvancedBook={timestamp:number;mid:number;bids:{price:number;quantity:number}[];asks:{price:number;quantity:number}[]};
+export type AdvancedMarketInput={symbol:string;observedAt:number;closes:number[];volumes:number[];book:AdvancedBook;trades:AdvancedTrade[];maxSpreadBps?:number;maxVolatilityPct?:number};
+export type ConfidenceOutcome={confidence:number;correct:boolean};
+export type AdvancedAssessment={
+ symbol:string;observedAt:number;price:number;
+ regime:{label:'bullish-trend'|'bearish-trend'|'range'|'high-volatility'|'transition';trendPct:number;realizedVolatilityPct:number;volatilityRatio:number;confidence:number};
+ liquidity:{spreadBps:number;depthImbalance:number;tradeDelta:number;bidNotional:number;askNotional:number;largeTradeCount:number;quality:'healthy'|'thin'|'stressed'};
+ debate:{bullishScore:number;bearishScore:number;neutralScore:number;consensus:'bullish'|'bearish'|'contested'|'no-edge';arguments:{side:string;points:string[]}[]};
+ adversarial:{passed:boolean;vetoes:string[];warnings:string[]};
+ risk:{approvedForPaperResearch:boolean;positionRiskPct:number;reasons:string[]};
+ calibration:{available:boolean;sampleCount:number;meanAbsoluteError:number|null;brierScore:number|null;note:string};
+ limitations:string[];liveTradingEnabled:false;
+};
+const finite=(n:number)=>Number.isFinite(n);
+const clamp=(n:number,min=0,max=100)=>Math.max(min,Math.min(max,n));
+const mean=(xs:number[])=>xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:0;
+const stdev=(xs:number[])=>{if(xs.length<2)return 0;const m=mean(xs);return Math.sqrt(mean(xs.map(x=>(x-m)**2)));};
+export function calibrateConfidence(records:ConfidenceOutcome[]){const valid=records.filter(x=>finite(x.confidence)&&x.confidence>=0&&x.confidence<=100&&typeof x.correct==='boolean');if(valid.length<20)return {available:false,sampleCount:valid.length,meanAbsoluteError:null,brierScore:null,note:'At least 20 labelled outcomes are required; no calibration is inferred from confidence alone.'};const errors=valid.map(x=>Math.abs(x.confidence/100-(x.correct?1:0)));return {available:true,sampleCount:valid.length,meanAbsoluteError:mean(errors),brierScore:mean(errors.map(x=>x*x)),note:'Calibration is descriptive and must be evaluated on a time-separated holdout.'};}
+export function assessAdvancedMarket(x:AdvancedMarketInput,calibration:ConfidenceOutcome[]=[]):AdvancedAssessment{
+ const errors:string[]=[];
+ if(!/^[A-Z0-9]{5,20}$/.test(x.symbol))errors.push('Invalid market symbol');
+ if(!finite(x.observedAt)||x.observedAt<=0)errors.push('Invalid observation timestamp');
+ if(!Array.isArray(x.closes)||x.closes.length<30||x.closes.some(v=>!finite(v)||v<=0))errors.push('At least 30 valid positive closes are required');
+ if(!Array.isArray(x.volumes)||x.volumes.length!==x.closes.length||x.volumes.some(v=>!finite(v)||v<0))errors.push('Volume series must align with closes and contain non-negative values');
+ if(!x.book||!finite(x.book.timestamp)||!finite(x.book.mid)||x.book.mid<=0||!x.book.bids?.length||!x.book.asks?.length)errors.push('A timestamped two-sided order book is required');
+ if(x.book?.bids?.some(l=>!finite(l.price)||l.price<=0||!finite(l.quantity)||l.quantity<0)||x.book?.asks?.some(l=>!finite(l.price)||l.price<=0||!finite(l.quantity)||l.quantity<0))errors.push('Invalid order-book levels');
+ if(x.book?.bids?.length&&x.book?.asks?.length&&x.book.asks[0].price<=x.book.bids[0].price)errors.push('Crossed or locked order book');
+ if(!Array.isArray(x.trades)||x.trades.some(t=>!finite(t.price)||t.price<=0||!finite(t.quantity)||t.quantity<0||!finite(t.timestamp)||!['buy','sell'].includes(t.aggressor)))errors.push('Invalid trade tape');
+ if(errors.length)throw new Error(errors.join('; '));
+ const closes=x.closes.slice(-120),returns=closes.slice(1).map((p,i)=>(p/closes[i]-1)*100),short=mean(returns.slice(-12)),long=mean(returns),trendPct=(closes.at(-1)!/closes[0]-1)*100,vol=stdev(returns),recentVol=stdev(returns.slice(-12)),volatilityRatio=vol>0?recentVol/vol:0;
+ const spreadBps=(x.book.asks[0].price-x.book.bids[0].price)/x.book.mid*10000;
+ const bidNotional=x.book.bids.slice(0,20).reduce((s,l)=>s+l.price*l.quantity,0),askNotional=x.book.asks.slice(0,20).reduce((s,l)=>s+l.price*l.quantity,0),depthTotal=bidNotional+askNotional,depthImbalance=depthTotal?(bidNotional-askNotional)/depthTotal:0;
+ const buy=x.trades.filter(t=>t.aggressor==='buy').reduce((s,t)=>s+t.price*t.quantity,0),sell=x.trades.filter(t=>t.aggressor==='sell').reduce((s,t)=>s+t.price*t.quantity,0),tapeTotal=buy+sell,tradeDelta=tapeTotal?(buy-sell)/tapeTotal:0;
+ const avgNotional=mean(x.trades.map(t=>t.price*t.quantity)),largeTradeCount=x.trades.filter(t=>avgNotional>0&&t.price*t.quantity>=avgNotional*5).length;
+ const staleBook=x.observedAt-x.book.timestamp>60_000||x.book.timestamp>x.observedAt+5_000,spreadLimit=x.maxSpreadBps??20,volLimit=x.maxVolatilityPct??1.5;
+ const regime:AdvancedAssessment['regime']={label:vol>volLimit?'high-volatility':Math.abs(trendPct)<.35?'range':Math.abs(short-long)<.015?'transition':trendPct>0?'bullish-trend':'bearish-trend',trendPct,realizedVolatilityPct:vol,volatilityRatio,confidence:clamp(Math.abs(trendPct)*12+Math.abs(depthImbalance)*20+Math.abs(tradeDelta)*20)};
+ const liquidity:AdvancedAssessment['liquidity']={spreadBps,depthImbalance,tradeDelta,bidNotional,askNotional,largeTradeCount,quality:spreadBps>spreadLimit*1.5||staleBook?'stressed':spreadBps>spreadLimit?'thin':'healthy'};
+ const bullPts:string[]=[],bearPts:string[]=[],neutralPts:string[]=[];
+ if(trendPct>.25)bullPts.push('Positive net price trend');else if(trendPct<-.25)bearPts.push('Negative net price trend');else neutralPts.push('Price change is directionally small');
+ if(depthImbalance>.12)bullPts.push('Displayed top-of-book depth is bid-heavy');else if(depthImbalance<-.12)bearPts.push('Displayed top-of-book depth is ask-heavy');else neutralPts.push('Displayed depth is balanced');
+ if(tradeDelta>.12)bullPts.push('Observed trade notional is buy-aggressive');else if(tradeDelta<-.12)bearPts.push('Observed trade notional is sell-aggressive');else neutralPts.push('Aggressor flow is mixed');
+ if(vol>volLimit)neutralPts.push('Elevated realised volatility argues for caution');
+ const bullishScore=bullPts.length,bearishScore=bearPts.length,neutralScore=neutralPts.length;
+ const consensus:AdvancedAssessment['debate']['consensus']=bullishScore>=2&&bullishScore>bearishScore?'bullish':bearishScore>=2&&bearishScore>bullishScore?'bearish':bullishScore===0&&bearishScore===0?'no-edge':'contested';
+ const vetoes:string[]=[],warnings:string[]=[];
+ if(staleBook)vetoes.push('Order-book snapshot is stale or from the future');
+ if(spreadBps>spreadLimit*1.5)vetoes.push('Spread exceeds the hard liquidity threshold');
+ if(!depthTotal)vetoes.push('No measurable displayed depth');
+ if(vol>volLimit*2)vetoes.push('Realised volatility exceeds the hard risk threshold');
+ if(consensus==='contested'||consensus==='no-edge')warnings.push('Independent directional evidence is not sufficiently aligned');
+ if(largeTradeCount>0)warnings.push('Large public trades do not identify beneficial owners or establish institutional intent');
+ if(spreadBps>spreadLimit)warnings.push('Spread is above the preferred execution threshold');
+ if(volatilityRatio>1.8)warnings.push('Short-window volatility is expanding relative to the sample');
+ const riskReasons=[...vetoes,...warnings];const approvedForPaperResearch=vetoes.length===0&&consensus!=='no-edge'&&consensus!=='contested';
+ const calibrationResult=calibrateConfidence(calibration);
+ return {symbol:x.symbol,observedAt:x.observedAt,price:closes.at(-1)!,regime,liquidity,debate:{bullishScore,bearishScore,neutralScore,consensus,arguments:[{side:'bullish',points:bullPts},{side:'bearish',points:bearPts},{side:'neutral',points:neutralPts}]},adversarial:{passed:vetoes.length===0,vetoes,warnings},risk:{approvedForPaperResearch,positionRiskPct:approvedForPaperResearch?0.1:0,reasons:riskReasons.length?riskReasons:['Research-only assessment passed; strategy validation and portfolio risk approval remain mandatory']},calibration:calibrationResult,limitations:['Trend and volatility measurements are descriptive statistics, not forecasts with guaranteed predictive power.','Displayed order-book depth is transient and may be cancelled.','Large public trades do not reveal beneficial ownership.','No derivatives, funding, liquidation, cross-exchange or tick-history data is included.','Confidence calibration is unavailable until sufficient labelled outcomes are supplied.','This engine does not create orders or authorise live or paper execution.'],liveTradingEnabled:false};
+}
