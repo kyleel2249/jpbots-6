@@ -23,7 +23,7 @@ crons = ["* * * * *"]
 
 [vars]
 AI_ENABLED = "false"
-AUTO_PAPER_ENABLED = "false"
+AUTO_PAPER_ENABLED = "true"
 AMD_PAPER_FORWARD_ENABLED = "false"
 AMD_SESSION_TIMEZONE = "UTC"
 AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
