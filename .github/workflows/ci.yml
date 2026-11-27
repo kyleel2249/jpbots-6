@@ -19,3 +19,5 @@ jobs:
       - run: npm run test
       - run: npm run build
       - run: npm run typecheck:worker
+      - run: npm run db:local
+      - run: npx wrangler deploy --dry-run
