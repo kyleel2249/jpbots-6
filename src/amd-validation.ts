@@ -43,7 +43,8 @@ function validateConfig(c:AmdValidationConfig):string[]{
  if(!Number.isInteger(c.maxHoldingCandles)||c.maxHoldingCandles<1||c.maxHoldingCandles>300)e.push('Maximum holding candles must be an integer between 1 and 300');
  return e;
 }
-function local(c:StrategyCandle,tz:string){const p=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(c.closeTime));const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return {date:v.year+'-'+v.month+'-'+v.day,minute:Number(v.hour)*60+Number(v.minute)};}
+const validationFormatterCache=new Map<string,Intl.DateTimeFormat>();
+function local(c:StrategyCandle,tz:string){let formatter=validationFormatterCache.get(tz);if(!formatter){formatter=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});validationFormatterCache.set(tz,formatter);}const p=formatter.formatToParts(new Date(c.closeTime));const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return {date:v.year+'-'+v.month+'-'+v.day,minute:Number(v.hour)*60+Number(v.minute)};}
 function average(v:number[]){return v.length?v.reduce((a,b)=>a+b,0)/v.length:0;}
 function atr(c:StrategyCandle[],index:number){const start=Math.max(1,index-14),v:number[]=[];for(let i=start;i<=index;i++){const x=c[i],p=c[i-1];v.push(Math.max(x.high-x.low,Math.abs(x.high-p.close),Math.abs(x.low-p.close)));}return average(v);}
 function metrics(trades:AmdReplayTrade[],initialEquity:number):{metrics:AmdMetrics;equityCurve:{time:number;equity:number;drawdownPct:number}[]}{
@@ -124,7 +125,7 @@ export function walkForwardAmd(candles:StrategyCandle[],folds=4){
  const timezone=DEFAULT_AMD_TIMEZONE,{train:allTrain,test:finalTest}=splitByLocalDays(candles,timezone,.8);
  const dates=[...new Set(allTrain.map(c=>local(c,timezone).date))].sort(),chunk=Math.max(1,Math.floor(dates.length/(n+1)));
  for(let i=0;i<n;i++){const trainEnd=chunk*(i+1),testEnd=Math.min(dates.length,trainEnd+chunk),trainDates=new Set(dates.slice(0,trainEnd)),testDates=new Set(dates.slice(trainEnd,testEnd)),train=allTrain.filter(c=>trainDates.has(local(c,timezone).date)),test=allTrain.filter(c=>testDates.has(local(c,timezone).date));
-  const opt=optimiseAmdParameters(train,{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra','Europe/London'],sweepSensitivitiesBps:[0,5,10],arrayStrengths:[65,75,85],minTrainTrades:8,minHoldoutTrades:3});
+  const opt=optimiseAmdParameters(train,{timezones:[DEFAULT_AMD_TIMEZONE,'Africa/Accra'],sweepSensitivitiesBps:[0,5],arrayStrengths:[65,80],minTrainTrades:5,minHoldoutTrades:2});
   const selected=opt.best?.config??null,validation=selected?replayAmdSessions(test,selected):null,trainResult=selected?replayAmdSessions(train,selected):null;
   results.push({fold:i+1,trainCandles:train.length,testCandles:test.length,selected,train:trainResult?.metrics??null,test:validation?.metrics??null,passed:!!validation?.metrics&&validation.metrics.trades>=3&&validation.metrics.expectancyR>0});
  }
