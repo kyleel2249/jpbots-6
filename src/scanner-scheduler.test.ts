@@ -16,8 +16,9 @@ describe('scanner scheduling capacity',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,5),true,idFactory());
   expect(tasks).toHaveLength(12);
   expect(tasks.filter(t=>t.kind==='institutional-strategy-scan')).toHaveLength(3);
-  expect(SCANNER_TASKS_PER_ALARM).toBe(12);
+  expect(SCANNER_TASKS_PER_ALARM).toBe(16);
  });
+ it('schedules one global multi-asset discovery task every fifteen minutes',()=>{const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,15),false,idFactory());expect(tasks.filter(t=>t.kind==='global-market-scan')).toHaveLength(1);});
  it('never schedules duplicate task IDs or symbols within one tick',()=>{
   const tasks=buildScheduledScannerTasks(Date.UTC(2026,10,27,12,5),true,idFactory());
   expect(new Set(tasks.map(t=>t.id)).size).toBe(tasks.length);

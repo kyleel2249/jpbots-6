@@ -233,3 +233,47 @@ The analysis endpoint remains authenticated and analysis-only. LLM output is val
 ### Deploy the backend Worker
 
 A manual GitHub Actions workflow `.github/workflows/deploy-backend.yml` is provided. Add a GitHub Actions repository secret `CLOUDFLARE_API_TOKEN` with permission to deploy Workers in this account, then run the workflow from the Actions tab. Apply remote D1 migrations deliberately before deploying code that requires the new schema. This deployment workflow does not silently mutate the remote database.
+
+
+## Global multi-asset market intelligence
+
+The global scanner is a **market-data discovery and research system**, not a backend self-scanner. It discovers exchange instruments, public DEX pools and chain metrics, persists a provenance-tagged universe, and ranks observation-only opportunities.
+
+### Current provider coverage
+
+- Binance Spot: exchange-wide active USDT, USDC, FDUSD, BTC and ETH quote spot catalog plus 24-hour tickers; BTC/ETH-quoted turnover is normalised to USD when reference prices are available.
+- Binance USD-M: active USDT/USDC perpetual contract catalog and 24-hour tickers.
+- Bitget Spot and Bitget USDT perpetual: public exchange-wide ticker feeds.
+- Bybit Spot and Linear USDT perpetual: public exchange-wide ticker feeds.
+- OKX Spot and USDT perpetual swaps: public exchange-wide ticker feeds.
+- GeckoTerminal: new-pool discovery on Solana, Ethereum, Base, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche.
+- DexScreener: latest token-profile discovery.
+- DeFiLlama: chain-level TVL observations.
+- Frankfurter: daily FX reference rates only (not live executable forex quotes).
+- Twelve Data (optional): rotating equity, index, commodity and intraday FX quote sample.
+
+The scanner performs quote/volume screening across the discovered universe and detailed 5-minute OHLCV analysis on a bounded, liquidity-ranked Binance Spot/perpetual sample. Chart analytics include EMA trend, RSI, ATR percentage, relative volume, engulfing/rejection patterns, fair-value gaps, and rolling support/resistance. Opportunity scores are evidence summaries, not calibrated probabilities or trade instructions.
+
+### Optional equities / indices / intraday FX / commodities provider
+
+To enable Twelve Data coverage, create an API key with the provider and store it only as a Cloudflare Worker secret:
+
+```sh
+npx wrangler secret put TWELVEDATA_API_KEY
+```
+
+Do not put provider keys in frontend variables, source files, Pages static assets, or browser storage. The current adapter rotates through a 15-symbol equity, index, forex and commodity set, requesting six quotes per scan to respect provider limits to limit free-tier request usage. The provider's plan and rate limits determine actual coverage.
+
+### Scanner endpoints
+
+- `GET /api/global-market/status`: latest run, source health and asset-class counts.
+- `GET /api/global-market/universe?limit=100`: discovered instruments.
+- `GET /api/global-market/universe?assetClass=crypto-perpetual`: filter the universe.
+- `GET /api/global-market/opportunities?limit=50`: ranked recent observations.
+- `POST /api/global-market/scan`: operator-authenticated discovery and scan. A scheduled Durable Object task also refreshes discovery every 15 minutes.
+
+### Coverage and safety limitations
+
+No single public provider exposes every exchange, every tradable pair, every forex venue, every equity, every commodity, or every on-chain pool. Public API catalogues are incomplete, rate-limited and may be delayed. This implementation therefore reports source-level health and clearly separates exchange-listed instruments, DEX discovery, chain TVL and daily FX reference rates. It does not claim exhaustive global-market coverage. More exchange adapters, licensed institutional feeds, exchange-specific contract metadata, RPC/indexer providers, and intraday FX/equities subscriptions are required to approach comprehensive coverage.
+
+All outputs are research-only. No global scanner result can authorise an order; live exchange execution remains disabled.
