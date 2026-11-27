@@ -5,7 +5,7 @@ export type PatternSignal={name:string;direction:'bullish'|'bearish'|'neutral';s
 const mean=(v:number[])=>v.length?v.reduce((a,b)=>a+b,0)/v.length:null;
 export function ema(values:number[],period:number):number|null{if(values.length<period)return null;const k=2/(period+1);let value=mean(values.slice(0,period))!;for(const x of values.slice(period))value=x*k+value*(1-k);return value;}
 export function rsi(values:number[],period=14):number|null{if(values.length<=period)return null;let gain=0,loss=0;for(let i=values.length-period;i<values.length;i++){const d=values[i]-values[i-1];if(d>0)gain+=d;else loss-=d;}if(loss===0)return 100;return 100-100/(1+(gain/period)/(loss/period));}
-export function analyseMarketChart(candles:Candle[]):{trend:'bullish'|'bearish'|'sideways'|'unknown';ema9:number|null;ema21:number|null;rsi14:number|null;atrPct:number|null;volumeRatio:number|null;patterns:PatternSignal[];fairValueGaps:Array<{side:'bullish'|'bearish';low:number;high:number;mid:number}>;support:number|null;resistance:number|null;lastPrice:number|null}{
+export function analyseMarketChart(candles:Candle[]):{trend:'bullish'|'bearish'|'sideways'|'unknown';ema9:number|null;ema21:number|null;rsi14:number|null;atrPct:number|null;volumeRatio:number|null;patterns:PatternSignal[];fairValueGaps:Array<{side:'bullish'|'bearish';low:number;high:number;mid:number}>;support:number|null;resistance:number|null;lastPrice:number|null;multiTimeframeAligned?:boolean;timeframes?:Record<string,unknown>}{
  const valid=candles.filter(c=>[c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite)&&c.low>0&&c.high>=c.low&&c.close>0);
  const closes=valid.map(c=>c.close),last=valid.at(-1),fast=ema(closes,9),slow=ema(closes,21),momentum=rsi(closes);
  const trend=fast===null||slow===null?'unknown':Math.abs(fast-slow)/slow<.0008?'sideways':fast>slow?'bullish':'bearish';
@@ -25,6 +25,7 @@ export function scoreGlobalOpportunity(input:{change24hPct?:number;volume24hUsd?
  if(c?.trend==='bullish'){score+=18;direction='bullish';reasons.push('EMA trend bullish');}else if(c?.trend==='bearish'){score+=18;direction='bearish';reasons.push('EMA trend bearish');}
  if(c?.rsi14!==null&&c?.rsi14!==undefined){if(c.rsi14>52&&c.rsi14<70&&direction==='bullish')score+=12;else if(c.rsi14<48&&c.rsi14>30&&direction==='bearish')score+=12;else if(c.rsi14>=70||c.rsi14<=30)reasons.push('RSI at an extreme; chase risk');}
  if(c?.patterns.some(p=>p.strength>=65&&p.direction===direction))score+=15;
+ if(c?.multiTimeframeAligned===true){score+=10;reasons.push('5m and 1h trends aligned');}else if(c?.multiTimeframeAligned===false)reasons.push('5m and 1h trends disagree');
  if(c?.volumeRatio&&c.volumeRatio>=1.5){score+=10;reasons.push('Volume expansion confirmed');}
  if(Number.isFinite(input.change24hPct)){const move=Math.abs(input.change24hPct!);if(move>=2&&move<=12)score+=8;else if(move>20)reasons.push('Extreme 24h move; volatility risk');}
  if((input.liquidityUsd??0)>1_000_000)score+=10;else if(input.liquidityUsd!==undefined)reasons.push('Thin or unverified liquidity');
