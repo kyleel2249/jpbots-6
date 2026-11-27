@@ -7,7 +7,7 @@ export type StrategyGenome={id:string;fast:number;slow:number;entryThreshold:num
 export type DecisionEvent={sequence:number;at:number;kind:string;payload:unknown;previousHash:string;hash:string};
 const finite=(n:number)=>Number.isFinite(n);
 const mean=(xs:number[])=>xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:0;
-const median=(xs:number[])=>{const a=[...xs].sort((x,y)=>x-y);return a.length?a[Math.floor((a.length-1)/2)]+(a.length%2?0:a[Math.floor(a.length/2)])/2:0;};
+const median=(xs:number[])=>{const a=[...xs].sort((x,y)=>x-y);return a.length?(a[Math.floor((a.length-1)/2)]+a[Math.floor(a.length/2)])/2:0;};
 const clamp=(n:number,a:number,b:number)=>Math.max(a,Math.min(b,n));
 export function synchroniseExchanges(quotes:ExchangeQuote[],now:number,maxAgeMs=15_000,maxSkewBps=35){
  const valid=quotes.filter(q=>q.exchange&&q.symbol&&q.source&&finite(q.observedAt)&&q.observedAt>0&&q.observedAt<=now+2_000&&now-q.observedAt<=maxAgeMs&&finite(q.bid)&&finite(q.ask)&&q.bid>0&&q.ask>q.bid&&finite(q.bidDepth)&&q.bidDepth>=0&&finite(q.askDepth)&&q.askDepth>=0);
@@ -16,11 +16,11 @@ export function synchroniseExchanges(quotes:ExchangeQuote[],now:number,maxAgeMs=
  const selected=[...dedup.values()],mids=selected.map(q=>(q.bid+q.ask)/2),reference=median(mids),skewBps=reference?Math.max(...mids.map(x=>Math.abs(x/reference-1)*10000)):0;
  return {symbol:symbols[0]??null,exchanges:selected.map(q=>q.exchange),referencePrice:reference||null,skewBps,healthy:selected.length>=2&&skewBps<=maxSkewBps,staleOrInvalidCount:quotes.length-selected.length,quotes:selected,reason:selected.length<2?'Fewer than two fresh independent exchanges':skewBps>maxSkewBps?'Cross-exchange price skew exceeds tolerance':null};
 }
-export function buildLiquidityMap(quotes:ExchangeQuote[],bucketBps=5){
- if(!finite(bucketBps)||bucketBps<=0)throw new Error('Liquidity bucket size must be positive');
- const buckets=new Map<number,{bidNotional:number;askNotional:number}>();
- for(const q of quotes){for(const [side,depth] of [['bid',q.bidDepth],['ask',q.askDepth]] as const){const price=side==='bid'?q.bid:q.ask,key=Math.round(price/(price*bucketBps/10000));const b=buckets.get(key)??{bidNotional:0,askNotional:0};if(side==='bid')b.bidNotional+=price*depth;else b.askNotional+=price*depth;buckets.set(key,b);}}
- return [...buckets.entries()].map(([key,v])=>{const price=key?key*bucketBps/10000:0;return {price,bidNotional:v.bidNotional,askNotional:v.askNotional,netNotional:v.bidNotional-v.askNotional,kind:v.bidNotional>v.askNotional*1.25?'support' as const:v.askNotional>v.bidNotional*1.25?'resistance' as const:'balanced' as const};}).sort((a,b)=>b.netNotional-a.netNotional);
+export function buildLiquidityMap(quotes:ExchangeQuote[],referencePrice:number,bucketBps=5){
+ if(!finite(bucketBps)||bucketBps<=0||!finite(referencePrice)||referencePrice<=0)throw new Error('Liquidity reference price and bucket size must be positive');
+ const bucketSize=referencePrice*bucketBps/10000,buckets=new Map<number,{bidNotional:number;askNotional:number}>();
+ for(const q of quotes){for(const [side,depth] of [['bid',q.bidDepth],['ask',q.askDepth]] as const){const price=side==='bid'?q.bid:q.ask,key=Math.round(price/bucketSize);const b=buckets.get(key)??{bidNotional:0,askNotional:0};if(side==='bid')b.bidNotional+=price*depth;else b.askNotional+=price*depth;buckets.set(key,b);}}
+ return [...buckets.entries()].map(([key,v])=>{const price=key*bucketSize;return {price,bidNotional:v.bidNotional,askNotional:v.askNotional,netNotional:v.bidNotional-v.askNotional,kind:v.bidNotional>v.askNotional*1.25?'support' as const:v.askNotional>v.bidNotional*1.25?'resistance' as const:'balanced' as const};}).sort((a,b)=>b.netNotional-a.netNotional);
 }
 export function analyseLiquidations(events:LiquidationEvent[],now:number,maxAgeMs=86_400_000){
  const valid=events.filter(e=>finite(e.observedAt)&&e.observedAt<=now&&now-e.observedAt<=maxAgeMs&&finite(e.price)&&e.price>0&&finite(e.quantity)&&e.quantity>0&&['long','short'].includes(e.side)&&!!e.source);
