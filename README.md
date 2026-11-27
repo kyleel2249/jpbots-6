@@ -55,6 +55,28 @@ Read-only endpoints:
 
 Historical requests are capped at 60 days and use paginated closed 5-minute candles. This is public market-data replay, not tick/order-book replay; funding, futures margin, liquidation and exchange queue-position effects are not modelled. Optimisation is research-only and must not automatically replace the configured session parameters. The forward observer records all opportunities independently; the optional paper-order extension is separately gated by both safety switches and remains disabled by default.
 
+
+## Secure website-to-Worker integration
+
+The website must call backend APIs through the same-origin Cloudflare Pages Function at `/api/*`. The browser must never receive `OPERATOR_API_TOKEN`, and must not send a Bearer token from client-side code.
+
+Configure the Cloudflare Pages project (both Production and Preview environments if both are used):
+
+1. **Settings → Functions → Service bindings:** add binding name `API_WORKER`, selecting the deployed Worker service `jp-bots-6-backend`. The Worker must be deployed in the same Cloudflare account and the selected environment must point at the intended Worker environment.
+2. **Settings → Variables and Secrets:** add a secret named `OPERATOR_API_TOKEN` with exactly the same value as the `OPERATOR_API_TOKEN` secret configured on the backend Worker. Worker secrets are not automatically shared with Pages Functions; configuring the Pages secret is a separate required step.
+3. Redeploy the Pages application after changing bindings or secrets so the deployment receives the new environment configuration.
+4. Keep the Worker secret configured independently. Never use a `VITE_*` variable, frontend `.env` value, HTML meta tag, local storage or browser request header as a place to store the operator token.
+
+The Pages proxy strips any browser-supplied Authorization header and injects the Pages secret server-side only for protected operator routes (AMD APIs, institutional strategy execution, AI analysis and operator diagnostics). Public market-data/registry requests do not require the operator token. Missing binding, missing Pages secret and unavailable Worker responses return distinct machine-readable errors.
+
+The dashboard's **AMD VALIDATION** tab exposes historical replay, parameter optimisation, walk-forward validation, forward observation and the opportunity ledger. Its backend connection panel authenticates through `GET /api/operator/status` and actively probes D1, KV (temporary expiring key) and the Durable Object orchestrator. This diagnostic route requires valid Pages-to-Worker secret forwarding; it does not expose the secret.
+
+After configuration, verify:
+- `GET /api/health` reports backend/D1 health (unauthenticated liveness check).
+- `GET /api/operator/status` reports `authenticated: true` and all three infrastructure checks as `connected`.
+- The browser Network panel shows same-origin `/api/*` requests only; no token value is present in browser JavaScript, request headers or build artifacts.
+- An unauthenticated direct request to a protected Worker route receives HTTP 401.
+
 ## Implemented backend foundation
 
 - **Cloudflare Worker API** in `backend/worker.ts`, deployed separately from the Vite/Pages dashboard.
