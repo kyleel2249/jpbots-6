@@ -4,12 +4,12 @@ JP Bots 6 is an independent multi-agent trading intelligence platform. It is not
 
 ## Integrated architecture foundation
 
-- 17 specialist departments, including market intelligence, scalping, day trading, multi-exchange trader replication, capital protection, signal intelligence, strategy evolution, Advanced Trading Intelligence 2.0, backtesting/paper/live validation, execution, position management, Solana token intelligence, order-book intelligence, portfolio allocation, learning/memory, orchestration and reliability.
+- 17 specialist departments and 219 registered specialist role definitions, including market intelligence, scalping, day trading, multi-exchange trader replication, capital protection, signal intelligence, strategy evolution, Advanced Trading Intelligence 2.0, backtesting/paper/live validation, execution, position management, Solana token intelligence, order-book intelligence, portfolio allocation, learning/memory, orchestration and reliability.
 - Specialist role registry generated from the department definitions. Registry entries are definitions, not evidence that worker processes are deployed or running.
-- Strategy catalog includes scalping, intraday and additional trend, swing, momentum, mean-reversion, breakout, pullback, reversal, range, arbitrage, funding, basis, volatility, grid, DCA, hedging, market-making, liquidation-event, news-reaction and adaptive-hybrid bot identities.
+- 39 named bot definitions: 10 scalping, 10 day-trading and 19 advanced strategy bots. Each has a strategy identity, supported timeframes/markets, a risk ceiling and a paper-only start gate. Strategy catalog includes scalping, intraday and additional trend, swing, momentum, mean-reversion, breakout, pullback, reversal, range, arbitrage, funding, basis, volatility, grid, DCA, hedging, market-making, liquidation-event, news-reaction and adaptive-hybrid bot identities.
 - Shared market intelligence and signal/risk/deployment qualification primitives.
 - Order-book analytics: OBI, weighted imbalance, cumulative depth bands, microprice, trade imbalance, queue-change proxy, depth sweep simulation, fees and slippage estimates.
-- Central capital authority, correlation/exposure limits, kill-switch conditions, evidence arbitration, scalping guards and reconciliation-before-resume rules.
+- Unified market-to-decision pipeline joins market reports, order-book pressure, agent evidence, data freshness, strategy economics and the independent central capital veto. Central capital authority, correlation/exposure limits, kill-switch conditions, evidence arbitration, scalping guards and reconciliation-before-resume rules.
 - Shared testing graduation gates, trade-memory validation, performance learning and auditable strategy version requirements.
 - Bitget market-category capability model for Spot, Margin, USDT-M, Coin-M and USDC-M. Venue adapters are not connected.
 
