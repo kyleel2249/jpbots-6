@@ -34,13 +34,13 @@ async function marketBundle(env:Env,symbol:string){
  ]);
  if(!raw.length||!depth.bids.length||!depth.asks.length)throw new Error('Provider returned incomplete candle or order-book data');
  const closes=raw.map(k=>Number(k[4]));
- if(closes.some(x=>!Number.isFinite(x)||x<=0))throw new Error('Invalid candle prices received');
+ if(raw.some(k=>{const values=[Number(k[1]),Number(k[2]),Number(k[3]),Number(k[4]),Number(k[5])];return values.some(x=>!Number.isFinite(x)||x<=0)||Number(k[2])<Number(k[3])||Number(k[0])<0;}))throw new Error('Invalid or incomplete candle data received');
  const bidLevels=depth.bids.map(x=>({price:Number(x[0]),quantity:Number(x[1])})),askLevels=depth.asks.map(x=>({price:Number(x[0]),quantity:Number(x[1])}));
  const bestBid=bidLevels[0]?.price??0,bestAsk=askLevels[0]?.price??0,mid=(bestBid+bestAsk)/2;
  if(!(mid>0)||bestAsk<=bestBid)throw new Error('Invalid or crossed order book');
  const now=Date.now(),book:OrderBookSnapshot={symbol,timestamp:now,mid,bids:bidLevels,asks:askLevels,trades:trades.map(t=>({price:Number(t.p),quantity:Number(t.q),aggressor:t.m?'sell':'buy',timestamp:t.T}))};
  const last=raw[raw.length-1],spreadBps=(bestAsk-bestBid)/mid*10000;
- const snapshot:Snapshot={symbol,timestamp:now,source:'Binance Spot public REST',timeframe:'1m',prices:closes,volumes:raw.map(k=>Number(k[5])),spreadBps,dataQuality:1};
+ const snapshot:Snapshot={symbol,timestamp:now,source:'Binance Spot public REST',timeframe:'1m',prices:closes,volumes:raw.map(k=>Number(k[5])),spreadBps,dataQuality:.95};
  return {snapshot,book,closes,ema9:ema(closes,9),ema21:ema(closes,21),rsi14:rsi(closes),lastPrice:closes[closes.length-1],candleCloseTime:Number(last[6]),observedAt:now};
 }
 async function runMarketScan(env:Env,symbol:string){
@@ -68,7 +68,7 @@ async function route(request:Request,env:Env):Promise<Response>{
  if(path==='/api/providers'&&request.method==='GET')return json({marketData:{binanceSpot:{status:'connected-on-request',public:true},bitgetPublic:{status:'connected-on-request',public:true,markets:['spot','margin-reference','usdt-m','coin-m','usdc-m']},solanaDex:{provider:'DexScreener',status:'connected-on-request',public:true},solanaNewPools:{provider:'GeckoTerminal',status:'connected-on-request',public:true}},macroNews:{status:'not-configured',reason:'No licensed provider credentials configured'},traderDiscovery:{status:'not-configured',reason:'No supported source-trader data provider configured'},execution:{bitget:{status:'not-connected',markets:['spot','margin','usdt-m','coin-m','usdc-m']},solanaDex:{status:'read-only'}},liveTradingEnabled:false});
  if(path==='/api/market/tickers'&&request.method==='GET'){
   const symbols=(url.searchParams.get('symbols')||'BTCUSDT,ETHUSDT,SOLUSDT').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9]{5,20}$/.test(x)).slice(0,20);
-  const results=await Promise.all(symbols.map(async symbol=>{const x=await getJson<any>(binance(env)+'/api/v3/ticker/24hr?symbol='+symbol);return {symbol,price:Number(x.lastPrice),changePct:Number(x.priceChangePercent),volume:Number(x.quoteVolume),observedAt:Date.now(),source:'Binance Spot REST'};}));
+  const results=await Promise.all(symbols.map(async symbol=>{const x=await getJson<any>(binance(env)+'/api/v3/ticker/24hr?symbol='+symbol);const price=Number(x.lastPrice),changePct=Number(x.priceChangePercent),volume=Number(x.quoteVolume);if(!Number.isFinite(price)||price<=0||!Number.isFinite(changePct)||!Number.isFinite(volume))throw new Error('Invalid Binance ticker data for '+symbol);return {symbol,price,changePct,volume,observedAt:Date.now(),source:'Binance Spot REST'};}));
   return json({source:'Binance Spot REST',observedAt:Date.now(),tickers:results});
  }
  if(path==='/api/market/bitget/tickers'&&request.method==='GET'){
