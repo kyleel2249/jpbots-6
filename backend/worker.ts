@@ -99,7 +99,7 @@ async function closePaperPosition(env:Env,position:any,book:OrderBookSnapshot,re
  const config=JSON.parse(String(position.payload_json||'{}')) as {feeBps?:number};
  const feeBps=Number.isFinite(config.feeBps)?Number(config.feeBps):10,now=Date.now();
  const exit=planPaperLongExit({book,quantity:Number(position.quantity),entryPrice:Number(position.entry_price),entryFee:Number(position.entry_fee),feeBps,now});
- if(!exit.valid||exit.averageExitPrice===null){await env.DB.prepare("UPDATE paper_positions SET status='open' WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,errors:exit.errors};}
+ if(!exit.valid||exit.averageExitPrice===null){await env.DB.prepare("UPDATE paper_positions SET status='open',closing_since=NULL WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,errors:exit.errors};}
  const account=await getPaperAccount(env);if(!account){await env.DB.prepare("UPDATE paper_positions SET status='open' WHERE position_id=? AND status='closing'").bind(position.position_id).run();return {closed:false,reason:'paper account unavailable'};}
  const equityBefore=Number(account.equity),equityAfter=equityBefore+exit.netPnl,peak=Math.max(Number(account.peak_equity),equityAfter);
  const dayKey=new Date(now).toISOString().slice(0,10),weekKey=paperWeekKey(now),monthKey=dayKey.slice(0,7);
@@ -109,7 +109,7 @@ async function closePaperPosition(env:Env,position:any,book:OrderBookSnapshot,re
  const loss=(start:number)=>start>0?Math.max(0,(start-equityAfter)/start*100):100;
  const openPositions=Math.max(0,Number(account.open_positions)-1),fillId=uuid();
  await env.DB.batch([
-  env.DB.prepare("UPDATE paper_positions SET status='closed',closed_at=?,exit_price=?,exit_fee=?,gross_pnl=?,net_pnl=?,exit_reason=? WHERE position_id=? AND status='closing'").bind(now,exit.averageExitPrice,exit.exitFee,exit.grossPnl,exit.netPnl,reason,position.position_id),
+  env.DB.prepare("UPDATE paper_positions SET status='closed',closing_since=NULL,closed_at=?,exit_price=?,exit_fee=?,gross_pnl=?,net_pnl=?,exit_reason=? WHERE position_id=? AND status='closing'").bind(now,exit.averageExitPrice,exit.exitFee,exit.grossPnl,exit.netPnl,reason,position.position_id),
   env.DB.prepare("INSERT INTO paper_fills(fill_id,position_id,symbol,side,quantity,price,fee,slippage_bps,created_at,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(fillId,position.position_id,position.symbol,'sell',exit.filledQuantity,exit.averageExitPrice,exit.exitFee,exit.slippageBps,now,JSON.stringify({reason,netPnl:exit.netPnl})),
   env.DB.prepare("INSERT INTO paper_execution_events(event_id,symbol,side,event_type,observed_at,payload_json) VALUES(?,?,?,?,?,?)").bind(uuid(),position.symbol,'sell','paper.position.closed',now,JSON.stringify({positionId:position.position_id,reason,exit})),
   env.DB.prepare("UPDATE paper_accounts SET equity=?,peak_equity=?,daily_loss_pct=?,weekly_loss_pct=?,monthly_loss_pct=?,open_positions=?,day_key=?,day_start_equity=?,week_key=?,week_start_equity=?,month_key=?,month_start_equity=?,updated_at=? WHERE account_id='default'").bind(equityAfter,peak,loss(dayStart),loss(weekStart),loss(monthStart),openPositions,dayKey,dayStart,weekKey,weekStart,monthKey,monthStart,now)
@@ -287,7 +287,7 @@ async function runGlobalMarketScan(env:Env,maxDeepScan=12){
 
 async function divisionAccount(env:Env,division:TradingDivision){return env.DB.prepare('SELECT * FROM division_paper_accounts WHERE division_id=?').bind(division).first<any>();}
 async function closeDivisionPaperPosition(env:Env,position:any,book:OrderBookSnapshot,reason:string){
- const claim=await env.DB.prepare("UPDATE division_paper_positions SET status='closing' WHERE position_id=? AND status='open'").bind(position.position_id).run();
+ const claimNow=Date.now(),staleClosingBefore=claimNow-60_000,claim=await env.DB.prepare("UPDATE division_paper_positions SET status='closing',closing_since=? WHERE position_id=? AND (status='open' OR (status='closing' AND (closing_since IS NULL OR closing_since<?)))").bind(claimNow,position.position_id,staleClosingBefore).run();
  if(Number(claim.meta?.changes??0)!==1)return {closed:false,reason:'position already claimed or closed'};
  const payload=JSON.parse(String(position.payload_json||'{}')),feeBps=Number.isFinite(payload.feeBps)?Number(payload.feeBps):10;
  const exit=planPaperLongExit({book,quantity:Number(position.quantity),entryPrice:Number(position.entry_price),entryFee:Number(position.entry_fee),feeBps,now:Date.now(),maxSlippageBps:25});
@@ -354,20 +354,20 @@ async function reconcileDivisionPaperAccounts(env:Env){
 
 
 async function monitorDivisionPositionsForSymbol(env:Env,symbol:string,book:OrderBookSnapshot){
- const open=await env.DB.prepare("SELECT * FROM division_paper_positions WHERE symbol=? AND status='open'").bind(symbol).all<any>(),monitor:any[]=[];
+ const open=await env.DB.prepare("SELECT * FROM division_paper_positions WHERE symbol=? AND (status='open' OR (status='closing' AND (closing_since IS NULL OR closing_since<?)))").bind(symbol,Date.now()-60_000).all<any>(),monitor:any[]=[];
  for(const position of open.results){
   const entry=Number(position.entry_price),riskDistance=entry-Number(position.stop_price),payload=JSON.parse(String(position.payload_json||'{}')),feeBps=Number.isFinite(payload.feeBps)?Number(payload.feeBps):10;
   if(riskDistance>0&&book.mid>=entry+riskDistance&&Number(position.stop_price)<entry){
    const breakEven=entry*(1+feeBps/10000),moved=await env.DB.prepare("UPDATE division_paper_positions SET stop_price=? WHERE position_id=? AND status='open' AND stop_price<?").bind(breakEven,position.position_id,breakEven).run();
    if(Number(moved.meta?.changes??0)===1){position.stop_price=breakEven;monitor.push({positionId:position.position_id,action:'break-even-stop-raised',stopPrice:breakEven});}
   }
-  const reason=book.mid<=Number(position.stop_price)?'stop-loss':book.mid>=Number(position.target_price)?'take-profit':null;
+  const reason=position.status==='closing'?'recovered-closing':book.mid<=Number(position.stop_price)?'stop-loss':book.mid>=Number(position.target_price)?'take-profit':null;
   if(reason)monitor.push(await closeDivisionPaperPosition(env,position,book,reason));
  }
  return monitor;
 }
 async function runDivisionPositionMonitor(env:Env){
- const rows=await env.DB.prepare("SELECT DISTINCT symbol FROM division_paper_positions WHERE status='open' ORDER BY symbol LIMIT 20").all<any>(),results:any[]=[];
+ const rows=await env.DB.prepare("SELECT DISTINCT symbol FROM division_paper_positions WHERE status='open' OR (status='closing' AND (closing_since IS NULL OR closing_since<?)) ORDER BY symbol LIMIT 20").bind(Date.now()-60_000).all<any>(),results:any[]=[];
  for(const row of rows.results){const symbol=String(row.symbol);try{const bundle=await marketBundle(env,symbol);results.push({symbol,actions:await monitorDivisionPositionsForSymbol(env,symbol,bundle.book)});}catch(error){results.push({symbol,error:String(error).slice(0,200)});}}
  return {observedAt:Date.now(),symbols:rows.results.length,results,liveTradingEnabled:false};
 }
