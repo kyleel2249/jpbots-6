@@ -378,8 +378,11 @@ async function runAdaptiveDivisionScan(env:Env){
  const policies:Partial<Record<TradingDivision,DivisionPolicy>>={},accounts:Record<string,any>={};
  for(const row of divisionRows.results){const id=String(row.division_id) as TradingDivision;if(id!=='scalping'&&id!=='day-trading')continue;const account=await divisionAccount(env,id),enabled=Number(row.enabled)===1&&Number(row.allocation_usd)>0,divisionCapital=enabled?Math.min(Number(row.allocation_usd),Number(account?.equity||0)):0;policies[id]={...DEFAULT_DIVISION_POLICIES[id],allocationUsd:divisionCapital,maxRiskPerTradePct:Number(row.max_risk_per_trade_pct),maxDailyLossPct:Number(row.max_daily_loss_pct),maxOpenPositions:Number(row.max_open_positions),minScore:divisionCapital>0?DEFAULT_DIVISION_POLICIES[id].minScore:101};accounts[id]=account;}
  const allocation=Object.values(policies).reduce((sum,p)=>sum+Number(p?.allocationUsd||0),0),totalCapital=Math.max(0,Math.min(Number(master?.equity||0),allocation));
- const candidates=await env.DB.prepare("SELECT instrument_id,symbol,price,score,observed_at,venue FROM global_market_opportunities WHERE asset_class='crypto-spot' AND venue='Binance Spot' AND observed_at>? AND score>=18 ORDER BY score DESC,observed_at DESC LIMIT 6").bind(now-20*60*1000).all<any>();
- const symbols=[...new Set(candidates.results.map((x:any)=>String(x.symbol)))].filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,6);
+ const universeRaw=await env.KV_BINDING.get('global-market:universe:v1').catch(()=>null);
+ let candidateRows:any[]=[];
+ if(universeRaw){try{const snapshot=JSON.parse(universeRaw);if(snapshot.status==='completed'&&Number(snapshot.completedAt)>=now-20*60*1000)candidateRows=(snapshot.opportunities||[]).filter((x:any)=>x.instrument?.assetClass==='crypto-spot'&&x.instrument?.venue==='Binance Spot'&&Number(x.instrument?.observedAt)>=now-20*60*1000&&Number(x.score)>=18).sort((a:any,b:any)=>Number(b.score)-Number(a.score)).slice(0,6).map((x:any)=>({instrument_id:x.instrument.id,symbol:x.instrument.symbol,price:x.instrument.price,score:x.score,observed_at:x.instrument.observedAt,venue:x.instrument.venue}));}catch{candidateRows=[];}}
+ else{const legacy=await env.DB.prepare("SELECT instrument_id,symbol,price,score,observed_at,venue FROM global_market_opportunities WHERE asset_class='crypto-spot' AND venue='Binance Spot' AND observed_at>? AND score>=18 ORDER BY score DESC,observed_at DESC LIMIT 6").bind(now-20*60*1000).all<any>();candidateRows=legacy.results;}
+ const candidates={results:candidateRows},symbols=[...new Set(candidateRows.map((x:any)=>String(x.symbol)))].filter(s=>/^[A-Z0-9]{5,20}$/.test(s)).slice(0,6);
  const results:any[]=[];
  for(const symbol of symbols){
   try{
