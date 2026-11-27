@@ -61,7 +61,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     observedAt:now,spreadBps,estimatedRoundTripCostBps:spreadBps+feeBps*2+2,
     volatilityPct:atrPct(one),volumeRatio:baseline>0?recent/baseline:0,
     trendAlignment:scalpDirection==='long'?1:scalpDirection==='short'?-1:0,
-    orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:atrPct(five),
+    orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:atrPct(five),scalpingAtrPct:atrPct(one),dayTradingAtrPct:atrPct(five),
     dataAgeMs:0,sessionEligible:input.sessionEligible??true,
     fvg:dayFvg||longFvg||shortFvg,liquiditySweep:daySweep||scalpSweep,
     marketStructureShift:(dayDirection==='long'&&five.at(-1)!.close>Math.max(...five.slice(-12,-1).map(c=>c.high)))||(dayDirection==='short'&&five.at(-1)!.close<Math.min(...five.slice(-12,-1).map(c=>c.low))),
@@ -71,7 +71,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
 export function buildLongPaperLevels(evidence:MarketEvidence,division:'scalping'|'day-trading'){
   if(evidence.direction!=='long'&&division==='day-trading')return {valid:false,reason:'The spot-only division paper executor cannot open short positions'};
   if(evidence.scalpingDirection!=='long'&&division==='scalping')return {valid:false,reason:'The spot-only division paper executor cannot open short positions'};
-  const price=evidence.price,atr=price*evidence.atrPct/100;
+  const price=evidence.price,atr=price*(division==='scalping'?(evidence.scalpingAtrPct??evidence.atrPct):(evidence.dayTradingAtrPct??evidence.atrPct))/100;
   if(!(price>0&&atr>0))return {valid:false,reason:'ATR-based stop distance is unavailable'};
   const stopDistance=Math.max(atr*(division==='scalping'?0.8:1.5),price*0.001);
   const stop=price-stopDistance,target=price+stopDistance*(division==='scalping'?1.5:2);
