@@ -13,7 +13,7 @@ import { buildInstitutionalTradePlan, replayInstitutionalStrategy, walkForwardIn
 import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 import { assessAdvancedMarket } from '../src/advanced-intelligence';
 import { assessDerivatives, type DerivativesSnapshot } from '../src/derivatives-intelligence';
-import { synchroniseExchanges, buildLiquidityMap, analyseLiquidations, buildSpecialistDebate, adversarialStrategyTest, evolveStrategies, calculatePortfolioRisk, simulateSmartExecution, makeDecisionEvent, verifyDecisionReplay, recoverAgentState, type ExchangeQuote, type DerivativePoint } from '../src/predictive-liquidity-engine';
+import { synchroniseExchanges, buildLiquidityMap, analyseLiquidations, buildSpecialistDebate, adversarialStrategyTest, evolveStrategies, calculatePortfolioRisk, simulateSmartExecution, makeDecisionEvent, verifyDecisionReplay, recoverAgentState, scoreStrategyGenome, type ExchangeQuote, type DerivativePoint } from '../src/predictive-liquidity-engine';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -53,13 +53,13 @@ async function loadDerivatives(symbol:string):Promise<DerivativesSnapshot|null>{
 async function loadPredictiveDerivatives(symbol:string):Promise<{points:DerivativePoint[];source:string|null}>{
  try{
   const base='https://fapi.binance.com';
-  const [fundingResponse,oiResponse,premiumResponse]=await Promise.all([
+  const [fundingResponse,oiResponse]=await Promise.all([
    fetch(base+'/fapi/v1/fundingRate?symbol='+encodeURIComponent(symbol)+'&limit=100',{signal:AbortSignal.timeout(5000)}),
    fetch(base+'/futures/data/openInterestHist?symbol='+encodeURIComponent(symbol)+'&period=5m&limit=30',{signal:AbortSignal.timeout(5000)}),
-   fetch(base+'/fapi/v1/premiumIndex?symbol='+encodeURIComponent(symbol),{signal:AbortSignal.timeout(5000)})
+   Promise.resolve(new Response('{}'))
   ]);
-  if(!fundingResponse.ok||!oiResponse.ok||!premiumResponse.ok)return {points:[],source:null};
-  const [funding,oi,premium]=await Promise.all([fundingResponse.json() as Promise<any[]>,oiResponse.json() as Promise<any[]>,premiumResponse.json() as Promise<any>]);
+  if(!fundingResponse.ok||!oiResponse.ok)return {points:[],source:null};
+  const [funding,oi]=await Promise.all([fundingResponse.json() as Promise<any[]>,oiResponse.json() as Promise<any[]>]);
   const points:DerivativePoint[]=[];
   for(const row of oi){const at=Number(row.timestamp),oiValue=Number(row.sumOpenInterest);const fr=funding.filter((x:any)=>Number(x.fundingTime)<=at).at(-1);if(Number.isFinite(at)&&Number.isFinite(oiValue)&&oiValue>=0&&fr){points.push({observedAt:at,fundingRate:Number(fr.fundingRate),openInterest:oiValue});}}
   return {points,source:'Binance USD-M Futures public fundingRate + openInterestHist'};
@@ -253,10 +253,10 @@ async function route(request:Request,env:Env):Promise<Response>{
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
   if(!/^(BTC|ETH|SOL|BNB)USDT$/.test(symbol))return json({error:'Supported symbols: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT'},400);
   const bundle=await marketBundle(env,symbol),now=bundle.observedAt;
-  const bitgetResponse=await fetch('https://api.bitget.com/api/v2/spot/market/tickers?symbol='+encodeURIComponent(symbol),{signal:AbortSignal.timeout(5000)}).catch(()=>null);
-  let bitget:any=null;if(bitgetResponse?.ok){const data=await bitgetResponse.json().catch(()=>null) as any;bitget=data?.data?.[0]??null;}
-  const quotes:ExchangeQuote[]=[{exchange:'Binance Spot',symbol,observedAt:now,sequence:undefined,bid:bundle.book.bids[0].price,ask:bundle.book.asks[0].price,bidDepth:bundle.book.bids.slice(0,20).reduce((a,l)=>a+l.quantity,0),askDepth:bundle.book.asks.slice(0,20).reduce((a,l)=>a+l.quantity,0),source:'Binance public REST order book'}];
-  if(bitget){const bid=Number(bitget.bidPr),ask=Number(bitget.askPr);if(Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>bid)quotes.push({exchange:'Bitget Spot',symbol,observedAt:now, bid,ask,bidDepth:Number(bitget.bidSz)||0,askDepth:Number(bitget.askSz)||0,source:'Bitget public Spot ticker'});}
+  const bitgetResponse=await fetch('https://api.bitget.com/api/v2/spot/market/orderbook?symbol='+encodeURIComponent(symbol)+'&type=step0&limit=20',{signal:AbortSignal.timeout(5000)}).catch(()=>null);
+  let bitget:any=null;if(bitgetResponse?.ok){const data=await bitgetResponse.json().catch(()=>null) as any;bitget=data?.data??null;}
+  const quotes:ExchangeQuote[]=[{exchange:'Binance Spot',symbol,observedAt:now,bid:bundle.book.bids[0].price,ask:bundle.book.asks[0].price,bidDepth:bundle.book.bids.reduce((a,l)=>a+l.quantity,0),askDepth:bundle.book.asks.reduce((a,l)=>a+l.quantity,0),bids:bundle.book.bids,asks:bundle.book.asks,source:'Binance public REST order book'}];
+  if(bitget){const bids=(bitget.bids||[]).map((l:any)=>({price:Number(l[0]),quantity:Number(l[1])})),asks=(bitget.asks||[]).map((l:any)=>({price:Number(l[0]),quantity:Number(l[1])})),bid=bids[0]?.price,ask=asks[0]?.price,observedAt=Number(bitget.ts);if(Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>bid&&Number.isFinite(observedAt)&&bids.length&&asks.length)quotes.push({exchange:'Bitget Spot',symbol,observedAt,bid,ask,bidDepth:bids.reduce((a:number,l:any)=>a+l.quantity,0),askDepth:asks.reduce((a:number,l:any)=>a+l.quantity,0),bids,asks,source:'Bitget public Spot order book'});}
   const sync=synchroniseExchanges(quotes,now),liquidity=buildLiquidityMap(sync.quotes,bundle.lastPrice),derivativeHistory=await loadPredictiveDerivatives(symbol);
   const validDerivatives=derivativeHistory.points.filter(p=>Number.isFinite(p.openInterest)&&Number.isFinite(p.fundingRate));
   const firstOi=validDerivatives[0]?.openInterest,lastOi=validDerivatives.at(-1)?.openInterest;
@@ -264,11 +264,11 @@ async function route(request:Request,env:Env):Promise<Response>{
   for(const p of validDerivatives){await env.DB.prepare('INSERT OR IGNORE INTO derivatives_history(symbol,observed_at,funding_rate,open_interest,mark_price,index_price,source) VALUES(?,?,?,?,?,?,?)').bind(symbol,p.observedAt,p.fundingRate,p.openInterest,p.markPrice,p.indexPrice,derivativeHistory.source).run();}
   const liquidations=analyseLiquidations([],now),returns=bundle.closes.slice(1).map((p:number,i:number)=>(p/bundle.closes[i]-1));
   const debate=buildSpecialistDebate({trendPct:(bundle.lastPrice/bundle.closes[0]-1)*100,depthImbalance:quotes.length?((quotes[0].bidDepth-quotes[0].askDepth)/(quotes[0].bidDepth+quotes[0].askDepth||1)):0,tradeDelta:bundle.book.trades?.length?((bundle.book.trades.filter((t:any)=>t.aggressor==='buy').reduce((a:number,t:any)=>a+t.price*t.quantity,0)-bundle.book.trades.filter((t:any)=>t.aggressor==='sell').reduce((a:number,t:any)=>a+t.price*t.quantity,0))/(bundle.book.trades.reduce((a:number,t:any)=>a+t.price*t.quantity,0)||1)):0,fundingRate:validDerivatives.at(-1)?.fundingRate??null,openInterestChangePct:oiChange,liquidations,exchangeHealthy:sync.healthy,spreadBps:bundle.snapshot.spreadBps});
-  let portfolioRisk:any=null;try{portfolioRisk=calculatePortfolioRisk({[symbol]:returns},.95);}catch(error){portfolioRisk={available:false,reason:String(error)};}
+  let portfolioRisk:any=null;try{const riskSymbols=['BTCUSDT','ETHUSDT','SOLUSDT'];const histories=await Promise.all(riskSymbols.map(async asset=>{try{const rows=await getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+asset+'&interval=1m&limit=120');return [asset,rows.map(k=>Number(k[4])).filter((v:number)=>Number.isFinite(v)&&v>0).slice(1).map((v:number,i:number)=>v/Number(rows.filter(k=>Number(k[4])>0)[i]?.[4]||v)-1)] as const;}catch{return [asset,[]] as const;}}));const aligned=Object.fromEntries(histories.filter(([,series])=>series.length>=20));portfolioRisk=calculatePortfolioRisk(Object.keys(aligned).length?aligned:{[symbol]:returns},.95);}catch(error){portfolioRisk={available:false,reason:String(error)};}
   const genome={id:'baseline-'+symbol,fast:9,slow:21,entryThreshold:.2,stopAtr:1.5,targetR:2,maxSpreadBps:20};
   const stress=adversarialStrategyTest(genome,[{name:'baseline',spreadMultiplier:1,slippageBps:5,missRate:0,latencyMs:100},{name:'spread-expansion',spreadMultiplier:1.5,slippageBps:15,missRate:.05,latencyMs:500},{name:'liquidity-shock',spreadMultiplier:2,slippageBps:30,missRate:.2,latencyMs:1500}]);
   const seed=[genome,{...genome,id:'conservative',fast:8,slow:26,stopAtr:2,targetR:1.8,maxSpreadBps:12},{...genome,id:'momentum',fast:5,slow:34,entryThreshold:.35,targetR:2.5}];
-  const evolution=evolveStrategies(seed,(g)=>g.targetR/(g.stopAtr+g.maxSpreadBps/100),3,12);
+  const evolution=evolveStrategies(seed,(g)=>scoreStrategyGenome(g,bundle.closes),3,12);
   const execution=simulateSmartExecution({side:'buy',quantity:Math.max(0.000001,Math.min(0.001,5/bundle.lastPrice)),levels:bundle.book.asks,referencePrice:bundle.lastPrice,feeBps:10,maxSlippageBps:20,latencyMs:150,queuePenaltyBps:1});
   const runId=uuid(),eventPayload={symbol,observedAt:now,exchangeSync:sync,liquidations,debate,portfolioRisk,stress,evolutionBest:evolution.best?.genome??null,execution};
   const event=makeDecisionEvent(1,now,'predictive-liquidity.assessment',eventPayload);
