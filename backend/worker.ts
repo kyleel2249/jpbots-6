@@ -7,7 +7,7 @@ import type { Evidence, OrderBookSnapshot, CapitalState } from '../src/shared-se
 import { planPaperLongEntry, planPaperLongExit } from '../src/paper-trading';
 import { runDepartmentCouncil, type WorkersAiBinding } from '../src/agent-runtime';
 import { analyseInstitutionalMarket } from '../src/institutional-intelligence';
-import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
+import { arbitrateRuntimeEvidence, handlerForInstitutionalFinding, planAutonomousPaperWorkflow, type RuntimeTask, type RuntimeEvidence } from '../src/autonomous-runtime';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
 interface D1Statement { bind(...values:any[]):D1Statement; run():Promise<D1Result>; all<T=any>():Promise<{results:T[]}>; first<T=any>():Promise<T|null> }
@@ -189,7 +189,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   const stateRows=department.agents.map(role=>{const finding=findingsByRole.get(role.name),status=finding?'ANALYSED':'INCOMPLETE',lastError=finding?null:'No validated specialist finding returned by the model';return env.DB.prepare("INSERT INTO agent_state(role_id,enabled,status,heartbeat_at,last_error,updated_at) VALUES(?,0,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET enabled=0,status=excluded.status,heartbeat_at=excluded.heartbeat_at,last_error=excluded.last_error,updated_at=excluded.updated_at").bind(department.id+':'+role.name,status,now,lastError,now);});
   if(taskRows.length||stateRows.length)await env.DB.batch([...taskRows,...stateRows]);
   await audit(env,'ai.department.analysis.completed','workers-ai-department-council',{departmentId,symbol,model,valid:result.valid,findings:result.findings.length,missingRoles:result.missingRoles.length,errors:result.errors});
-  return json({departmentId,department:department.name,symbol,model,promptVersion:result.promptVersion,valid:result.valid,findings:result.findings,missingRoles:result.missingRoles,errors:result.errors,tradeAuthorized:false,liveTradingEnabled:false,execution:'analysis-only'});
+  const plainLanguageReport=department.name+' assessment for '+symbol+': '+result.findings.map(f=>f.roleName+' reports '+f.stance+' with '+f.confidence+'% evidence confidence. '+f.reason).join(' ')+' '+(result.missingRoles.length?result.missingRoles.length+' specialist findings were unavailable.':'All registered specialist findings were validated.')+' This is advisory analysis only; it does not authorise a trade.';return json({department:department.name,symbol,report:plainLanguageReport,tradeAuthorized:false,liveTradingEnabled:false,execution:'analysis-only'});
  }
  if(path==='/api/institutional/analyse'&&request.method==='POST'){
   const body=await request.json().catch(()=>({})) as any,symbol=String(body.symbol||'BTCUSDT').toUpperCase();
@@ -213,6 +213,17 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(!row)return json({error:'No institutional analysis available for this symbol'},404);
   const a=JSON.parse(row.result_json),report='Institutional analysis for '+a.symbol+': '+a.overall.stance+' bias, confidence '+a.overall.confidence+'. '+a.findings.map((f:any)=>f.agent+': '+f.summary).join(' ');
   return json({analysisId:row.analysis_id,symbol:row.symbol,observedAt:row.observed_at,report,fvg:a.fvg,liquidityPools:a.liquidityPools,entryZones:a.entryZones,volumeProfile:a.volumeProfile,auction:a.auction,findings:a.findings,overall:a.overall,limitations:a.limitations,liveTradingEnabled:false});
+ }
+ if(path==='/api/runtime/status'&&request.method==='GET'){
+  const [queued,active,completed,messages,evidence,runs]=await Promise.all([
+   env.DB.prepare("SELECT COUNT(*) AS count FROM agent_tasks WHERE status='queued'").first<any>(),
+   env.DB.prepare("SELECT COUNT(*) AS count FROM agent_tasks WHERE status IN ('running','retrying')").first<any>(),
+   env.DB.prepare("SELECT COUNT(*) AS count FROM agent_tasks WHERE status='completed'").first<any>(),
+   env.DB.prepare('SELECT COUNT(*) AS count FROM agent_messages').first<any>(),
+   env.DB.prepare('SELECT COUNT(*) AS count FROM agent_evidence WHERE expires_at>?').bind(Date.now()).first<any>(),
+   env.DB.prepare('SELECT run_id,symbol,status,started_at,completed_at,decision_json FROM paper_strategy_runs ORDER BY started_at DESC LIMIT 20').all<any>()
+  ]);
+  return json({queued:Number(queued?.count??0),active:Number(active?.count??0),completed:Number(completed?.count??0),interAgentMessages:Number(messages?.count??0),freshEvidence:Number(evidence?.count??0),supervisorRuns:runs.results.map((r:any)=>({runId:r.run_id,symbol:r.symbol,status:r.status,startedAt:r.started_at,completedAt:r.completed_at,decision:JSON.parse(r.decision_json)})),independentRoleHandlers:10,liveTradingEnabled:false});
  }
  if(path==='/api/institutional/analyses'&&request.method==='GET'){const rows=await env.DB.prepare('SELECT analysis_id,symbol,observed_at,source FROM institutional_analyses ORDER BY observed_at DESC LIMIT 50').all();return json({analyses:rows.results,liveTradingEnabled:false});}
  if(path==='/api/paper/account'&&request.method==='GET'){const account=await getPaperAccount(env);return json({configured:!!account,account:account?{accountId:account.account_id,mode:'paper',initialEquity:account.initial_equity,equity:account.equity,peakEquity:account.peak_equity,dailyLossPct:account.daily_loss_pct,weeklyLossPct:account.weekly_loss_pct,monthlyLossPct:account.monthly_loss_pct,openPositions:account.open_positions,updatedAt:account.updated_at}:null,liveTradingEnabled:false});}
@@ -277,7 +288,12 @@ export class AgentOrchestrator {
      const rows=await this.env.DB.prepare('SELECT evidence_json FROM agent_evidence WHERE correlation_id=? AND expires_at>?').bind(task.correlationId,Date.now()).all<any>();
      if(rows.results.length>=10){
       const evidenceRows=rows.results.map((r:any)=>JSON.parse(r.evidence_json) as RuntimeEvidence),decision=arbitrateRuntimeEvidence(evidenceRows,Date.now());
-      await this.env.DB.prepare("INSERT OR IGNORE INTO paper_strategy_runs(run_id,symbol,strategy_id,status,started_at,completed_at,analysis_json,decision_json) VALUES(?,?,?,'analysis-only',?,?,?,?)").bind(task.correlationId,task.symbol,'institutional-evidence-arbitration',task.createdAt,Date.now(),JSON.stringify({correlationId:task.correlationId,evidenceCount:evidenceRows.length}),JSON.stringify({...decision,approved:false,liveTradingEnabled:false})).run();
+      const stored=await this.env.DB.prepare('SELECT result_json FROM institutional_analyses WHERE analysis_id=?').bind(task.correlationId).first<any>();
+      const analysis=stored?JSON.parse(stored.result_json):null;
+      const nearest=analysis?.entryZones?.[0]??null,entry=nearest?.mid??null;
+      const stop=entry!==null?entry*(decision.stance==='bearish'?1.003:.997):null,target=entry!==null?entry+(decision.stance==='bearish'?-1:1)*Math.abs(entry-(stop??entry))*2:null;
+      const workflow=analysis?planAutonomousPaperWorkflow({analysis,runtimeDecision:decision,strategyValidated:false,multiTimeframeAligned:false,marketDataFresh:true,executionEconomicsValid:false,capitalApproved:false,entry,stop,target}):{ready:false,mode:'paper-only',liveExecutionEnabled:false,entry:null,stop:null,target:null,reasons:['Persisted institutional analysis unavailable']};
+      await this.env.DB.prepare("INSERT OR IGNORE INTO paper_strategy_runs(run_id,symbol,strategy_id,status,started_at,completed_at,analysis_json,decision_json) VALUES(?,?,?,'analysis-only',?,?,?,?)").bind(task.correlationId,task.symbol,'institutional-evidence-arbitration',task.createdAt,Date.now(),JSON.stringify({correlationId:task.correlationId,evidenceCount:evidenceRows.length,analysisId:task.correlationId}),JSON.stringify({...decision,workflow,approved:false,liveTradingEnabled:false})).run();
       await this.env.DB.prepare("INSERT INTO agent_messages(message_id,correlation_id,from_role,to_role,message_type,created_at,payload_json) VALUES(?,?,?,?,?,?,?)").bind(uuid(),task.correlationId,'institutional:supervisor','paper-strategy-workflow','supervisor.decision',Date.now(),JSON.stringify(decision)).run();
      }
     }else throw new Error('Unsupported or malformed runtime task');
