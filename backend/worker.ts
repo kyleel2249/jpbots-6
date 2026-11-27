@@ -386,12 +386,12 @@ async function runAdaptiveDivisionScan(env:Env){
    const candidate=candidates.results.find((x:any)=>x.symbol===symbol);
    const bundle=await marketBundle(env,symbol);
    const [oneRaw,fiveRaw,hourRaw]=await Promise.all(['1m','5m','1h'].map(interval=>getJson<Kline[]>(binance(env)+'/api/v3/klines?symbol='+encodeURIComponent(symbol)+'&interval='+interval+'&limit=120')));
-   const convert=(rows:Kline[])=>rows.map(k=>({openTime:Number(k[0]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5]),closeTime:Number(k[6])})).filter(x=>x.closeTime<now);
-   const evidence=buildDivisionMarketEvidence({symbol,assetClass:'crypto-spot',candles1m:convert(oneRaw),candles5m:convert(fiveRaw),candles1h:convert(hourRaw),book:bundle.book,observedAt:now,feeBps:10});
+   const observedAt=bundle.book.timestamp,convert=(rows:Kline[])=>rows.map(k=>({openTime:Number(k[0]),open:Number(k[1]),high:Number(k[2]),low:Number(k[3]),close:Number(k[4]),volume:Number(k[5]),closeTime:Number(k[6])})).filter(x=>x.closeTime<observedAt);
+   const evidence=buildDivisionMarketEvidence({symbol,assetClass:'crypto-spot',candles1m:convert(oneRaw),candles5m:convert(fiveRaw),candles1h:convert(hourRaw),book:bundle.book,observedAt,feeBps:10});
    const monitor=await monitorDivisionPositionsForSymbol(env,symbol,bundle.book);
    if(!candidate){results.push({symbol,monitored:monitor});continue;}
    const decision=evaluateAdaptiveTrading(evidence,{totalCapitalUsd:totalCapital,policies}),decisionId=uuid();
-   await env.DB.prepare('INSERT INTO adaptive_trading_decisions(decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json,live_trading_enabled) VALUES(?,?,?,?,?,?,?,0)').bind(decisionId,symbol,now,decision.mode,JSON.stringify(decision.selected),JSON.stringify({scalping:decision.scalping,dayTrading:decision.dayTrading}),JSON.stringify(decision.rationale)).run();
+   await env.DB.prepare('INSERT INTO adaptive_trading_decisions(decision_id,symbol,observed_at,mode,selected_json,assessments_json,rationale_json,live_trading_enabled) VALUES(?,?,?,?,?,?,?,0)').bind(decisionId,symbol,evidence.observedAt,decision.mode,JSON.stringify(decision.selected),JSON.stringify({scalping:decision.scalping,dayTrading:decision.dayTrading}),JSON.stringify(decision.rationale)).run();
    const executions:any[]=[];
    if(env.AUTO_PAPER_ENABLED==='true'&&totalCapital>0){for(const selected of decision.selected){const policy=policies[selected.division];if(policy)executions.push(await openDivisionPaperPosition(env,selected.division,selected,evidence,bundle.book,policy));}}
    await audit(env,'adaptive-trading.autonomous-evaluation','adaptive-division-runtime',{decisionId,symbol,mode:decision.mode,selected:decision.selected.map(x=>x.division),standDown:decision.standDown,executions});
