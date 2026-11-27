@@ -5,7 +5,7 @@ import type {StrategyCandle} from './institutional-strategy';
 const DAY=Date.UTC(2026,0,1);
 function makeDay(day:number):StrategyCandle[]{
  const out:StrategyCandle[]=[];const base=DAY+day*86400000;
- const add=(minute:number,o:number,h:number,l:number,c:number,v=100)=>out.push({openTime:base+minute*60000-300000,closeTime:base+minute*60000-1,open:o,high:h,low:l,close:c,volume:v});
+ const add=(minute:number,o:number,h:number,l:number,c:number,v=100)=>out.push({openTime:base+minute*60000,closeTime:base+(minute+5)*60000-1,open:o,high:h,low:l,close:c,volume:v});
  for(let m=180;m<360;m+=5)add(m,100,101,99,100.2);
  for(let m=360,i=0;m<540;m+=5,i++)add(m,i===35?100.5:100,102, i===35?99.5:99, i===35?100.2:100.1);
  for(let m=540,i=0;m<720;m+=5,i++){if(i===10)add(m,100.2,101.8,98.5,101.5,250);else add(m,101.5,102.1,101.2,101.8);}
