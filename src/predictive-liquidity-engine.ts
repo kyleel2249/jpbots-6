@@ -1,5 +1,5 @@
 export type ExchangeQuote={exchange:string;symbol:string;observedAt:number;sequence?:number;bid:number;ask:number;bidDepth:number;askDepth:number;source:string};
-export type DerivativePoint={observedAt:number;fundingRate:number;openInterest:number;markPrice:number;indexPrice:number};
+export type DerivativePoint={observedAt:number;fundingRate:number;openInterest:number};
 export type LiquidationEvent={observedAt:number;side:'long'|'short';price:number;quantity:number;source:string};
 export type LiquidityLevel={price:number;bidNotional:number;askNotional:number;netNotional:number;kind:'support'|'resistance'|'balanced'};
 export type SpecialistEvidence={agent:string;direction:'bullish'|'bearish'|'neutral';score:number;confidence:number;observations:string[];provenance:string[];valid:boolean};
