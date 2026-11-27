@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS agent_assignments (
   division_id TEXT NOT NULL,
   symbol TEXT,
   timeframe TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('PAUSED','ASSIGNED','AWAITING_MARKET_DATA','DEGRADED')),
+  status TEXT NOT NULL CHECK(status IN ('PAUSED','ASSIGNED','AWAITING_MARKET_DATA','AWAITING_CAPABILITY','DEGRADED')),
   assignment_source TEXT,
   assigned_at INTEGER,
   updated_at INTEGER NOT NULL,
