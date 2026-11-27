@@ -75,5 +75,10 @@ describe('legacy signal helper cannot bypass central authority',()=>{
 });
 
 describe('deployment qualification cannot enable live execution',()=>{
+ it('rejects non-finite historical and paper evidence',()=>{const r=deploymentStage({tests:true,backtestTrades:Number.NaN,backtestExpectancy:1,oosTrades:60,oosExpectancy:.5,walkForward:true,stress:true,paperTrades:200,paperExpectancy:.5,paperDrawdown:2,stable:true,explicitApproval:true});expect(r.stage).toBe('paper');expect(r.reasons).toContain('invalid validation evidence');});
  it('returns review-only status even after all qualification checks',()=>{const r=deploymentStage({tests:true,backtestTrades:200,backtestExpectancy:1,oosTrades:60,oosExpectancy:.5,walkForward:true,stress:true,paperTrades:200,paperExpectancy:.5,paperDrawdown:2,stable:true,explicitApproval:true});expect(r.stage).toBe('restricted-live-review');expect(r.liveExecutionEnabled).toBe(false);});
+});
+
+describe('shared deployment evidence integrity',()=>{
+ it('rejects non-finite test evidence',()=>{const r=deploymentQualification({unitTests:true,backtestTrades:200,backtestNetExpectancy:1,oosTrades:60,oosNetExpectancy:.5,walkForward:true,stress:true,paperTrades:200,paperNetExpectancy:.5,paperMaxDrawdownPct:Number.NaN,stable:true,liveTestEvidence:true,explicitApproval:true});expect(r.eligible).toBe(false);expect(r.failed).toContain('invalid deployment evidence');expect(r.liveExecutionEnabled).toBe(false);});
 });
