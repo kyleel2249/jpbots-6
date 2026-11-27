@@ -1,4 +1,4 @@
-import { analyseAmdSession, DEFAULT_AMD_TIMEZONE, type AmdAssessment, type AmdDirection } from './amd-session-strategy';
+import { analyseAmdSession, buildAmdPdArrays, DEFAULT_AMD_TIMEZONE, type AmdAssessment, type AmdDirection } from './amd-session-strategy';
 import type { StrategyCandle } from './institutional-strategy';
 
 export type AmdValidationConfig = {
@@ -58,6 +58,16 @@ function metrics(trades:AmdReplayTrade[],initialEquity:number):{metrics:AmdMetri
 function bootstrap(trades:AmdReplayTrade[],iterations=1000){if(trades.length<5)return {iterations,expectancyR95:null as [number,number]|null,winRatePct95:null as [number,number]|null,sampleAdequate:false};let seed=42;const rand=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return (seed>>>0)/4294967296;};const e:number[]=[],w:number[]=[];for(let i=0;i<iterations;i++){let sum=0,wins=0;for(let j=0;j<trades.length;j++){const t=trades[Math.floor(rand()*trades.length)];sum+=t.netR;if(t.netR>0)wins++;}e.push(sum/trades.length);w.push(wins/trades.length*100);}e.sort((a,b)=>a-b);w.sort((a,b)=>a-b);return {iterations,expectancyR95:[e[Math.floor(iterations*.025)],e[Math.floor(iterations*.975)]] as [number,number],winRatePct95:[w[Math.floor(iterations*.025)],w[Math.floor(iterations*.975)]] as [number,number],sampleAdequate:true};}
 export function amdCostSensitivity(candles:StrategyCandle[],config:Partial<AmdValidationConfig>={},extraBps=[0,5,10]){return extraBps.map(extra=>{const result=replayAmdSessions(candles,{...config,slippageBps:(config.slippageBps??DEFAULT_AMD_VALIDATION_CONFIG.slippageBps)+extra});return {extraSlippageBps:extra,metrics:result.metrics,valid:result.valid};});}
 function regime(candles:StrategyCandle[]):'bullish'|'bearish'|'ranging'{if(candles.length<2)return 'ranging';const first=candles[0].open,last=candles[candles.length-1].close,change=first>0?(last-first)/first:0;return change>.003?'bullish':change<-.003?'bearish':'ranging';}
+function isAmdCandidate(session:StrategyCandle[],distribution:StrategyCandle[],index:number,manipulation:StrategyCandle[],config:AmdValidationConfig,arrays:{side:string;low:number;high:number;strength:number}[]){
+ const c=distribution[index],allPrior=[...manipulation,...distribution.slice(0,index)],vol=atr(session,session.indexOf(c)),s=config.sweepSensitivityBps/10000;
+ const hi=Math.max(...manipulation.map(x=>x.high)),lo=Math.min(...manipulation.map(x=>x.low));
+ const sweep=(c.high>hi*(1+s)&&c.close<hi)||(c.low<lo*(1-s)&&c.close>lo);
+ const bear=manipulation.slice().reverse().find(x=>x.close<x.open),bull=manipulation.slice().reverse().find(x=>x.close>x.open);
+ const cisd=!!vol&&vol>0&&((!!bear&&c.close>bear.open&&c.close>c.open&&c.close-c.open>=vol*.35)||(!!bull&&c.close<bull.open&&c.close<c.open&&c.open-c.close>=vol*.35));
+ const prior=allPrior.slice(-10),mss=prior.length>=5&&!!vol&&vol>0&&((c.close>Math.max(...prior.map(x=>x.high))&&c.close-c.open>=vol*.35)||(c.close<Math.min(...prior.map(x=>x.low))&&c.open-c.close>=vol*.35));
+ const arrayTouch=arrays.some(z=>z.strength>=config.minArrayStrength&&c.high>=z.low&&c.low<=z.high);
+ return sweep||cisd||mss||arrayTouch;
+}
 export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdValidationConfig>={}):AmdReplayResult{
  const config={...DEFAULT_AMD_VALIDATION_CONFIG,...overrides},errors=validateConfig(config);
  if(!input.length)errors.push('No historical candles supplied');
@@ -73,10 +83,11 @@ export function replayAmdSessions(input:StrategyCandle[],overrides:Partial<AmdVa
   const dist=session.filter(c=>local(c,config.timezone).minute>=540&&local(c,config.timezone).minute<720);
   if(acc.length<3||manip.length<6||dist.length<2)continue;
   const sessionRegime=regime(session);const bucket=regimes.get(sessionRegime)||{sessions:0,trades:[]};bucket.sessions++;regimes.set(sessionRegime,bucket);
-  let entered=false;
+  const pdArrays=buildAmdPdArrays(manip,config.minArrayStrength);let entered=false;
   for(let i=0;i<dist.length-1&&!entered;i++){
-   const signal=dist[i],signalIndex=session.indexOf(signal),history=session.slice(0,signalIndex+1);
-   const assessment=analyseAmdSession(history,signal.closeTime,config.timezone,{sweepSensitivityBps:config.sweepSensitivityBps,minArrayStrength:config.minArrayStrength});
+   const signal=dist[i],signalIndex=session.indexOf(signal);
+   if(!isAmdCandidate(session,dist,i,manip,config,pdArrays)){rejectedSignals++;continue;}
+   const history=session.slice(0,signalIndex+1),assessment=analyseAmdSession(history,signal.closeTime,config.timezone,{sweepSensitivityBps:config.sweepSensitivityBps,minArrayStrength:config.minArrayStrength});
    if(!assessment.qualified){rejectedSignals++;continue;}
    qualifiedSignals++;
    const next=dist[i+1],side=assessment.direction==='bullish'?'long':assessment.direction==='bearish'?'short':null;
