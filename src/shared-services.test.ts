@@ -1,4 +1,6 @@
 import {describe,it,expect} from 'vitest';
+import {botCatalog,botDepartmentCoverage,validateBotStart} from './bots';
+import {departments,allAgentRoles} from './departments';
 import {analyseOrderBook,simulateBookSweep,arbitrateTradeEvidence,capitalAuthority,scalpingGuard,deploymentQualification,validateTradeMemory,canResumeTrading,exchangeMarketSupport,calculateOrderFlowImbalance,classifyPerformance} from './shared-services';
 const book={symbol:'BTCUSDT',timestamp:1,mid:100,bids:[{price:99.99,quantity:8},{price:99.9,quantity:4}],asks:[{price:100.01,quantity:2},{price:100.1,quantity:6}],trades:[{price:100,quantity:5,aggressor:'buy' as const,timestamp:1}]};
 describe('shared order book intelligence',()=>{
@@ -17,4 +19,10 @@ describe('testing, memory and recovery',()=>{
  it('blocks restart until reconciled and approved',()=>expect(canResumeTrading({accountReconciled:false,marketDataFresh:true,exchangeHealthy:true,incidentAcknowledged:true,operatorApproved:true}).canResume).toBe(false));
  it('classifies underperforming systems conservatively',()=>expect(classifyPerformance({netPnl:20,grossProfit:30,grossLoss:10,maxDrawdownPct:20,trades:200,expectancy:.1,executionSlippageBps:2,signalCalibrationError:.1,regimeStable:true,dataReliable:true}).status).toBe('probation-or-restricted'));
  it('keeps Bitget market categories explicit but adapters disabled',()=>expect(exchangeMarketSupport.liveExecutionEnabled).toBe(false));
+});
+
+describe('integrated department and bot registry',()=>{
+ it('registers all specialist departments and generated agents',()=>{expect(departments).toHaveLength(17);expect(allAgentRoles.length).toBeGreaterThan(200);});
+ it('registers scalping, day and advanced bot families',()=>{expect(botDepartmentCoverage.scalping).toBe(10);expect(botDepartmentCoverage.dayTrading).toBe(10);expect(botCatalog.length).toBe(39);});
+ it('keeps every bot paper-only and fails closed on live requests',()=>{const bot=botCatalog[0];const r=validateBotStart(bot,{mode:'restricted-live',market:'spot',timeframe:'1m',configuredRiskPct:.1,testsPassed:true,capitalApproved:true,marketDataFresh:true,exchangeHealthy:true});expect(r.allowed).toBe(false);expect(r.liveEnabled).toBe(false);});
 });
