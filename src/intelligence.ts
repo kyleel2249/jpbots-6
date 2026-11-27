@@ -1,19 +1,22 @@
 import type {Agent,Signal} from './types';import {defaultRisk,validateSignal,type RiskConfig} from './engine';
 export type Snapshot={symbol:string;timestamp:number;source:string;timeframe:string;prices:number[];volumes?:number[];bidDepth?:number;askDepth?:number;spreadBps?:number;fundingRate?:number;openInterest?:number;dataQuality?:number};
 export function buildMarketReport(s:Snapshot){
- const p=s.prices.filter(x=>Number.isFinite(x)&&x>0),ret=p.slice(1).map((v,i)=>(v-p[i])/p[i]);
+ const raw=s.prices??[],invalidPrices=raw.some(x=>!Number.isFinite(x)||x<=0),p=raw.filter(x=>Number.isFinite(x)&&x>0),ret=p.slice(1).map((v,i)=>(v-p[i])/p[i]);
  const avg=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
  const mid=Math.floor(p.length/2),first=avg(p.slice(0,mid)),second=avg(p.slice(mid)),movePct=first>0?(second-first)/first*100:0;
  const vol=Math.sqrt(avg(ret.map(x=>x*x)))*100,quality=s.dataQuality??(p.length>=20?.85:p.length>=5?.65:.25);
- const imb=s.bidDepth!==undefined&&s.askDepth!==undefined&&s.bidDepth+s.askDepth>0?(s.bidDepth-s.askDepth)/(s.bidDepth+s.askDepth):null;
- const risks:string[]=[];
- if(quality<.7)risks.push('Market data quality insufficient');
- if(s.spreadBps===undefined)risks.push('Spread data unavailable');else if(s.spreadBps>15)risks.push('Spread above 15 bps');
+ const depthValid=(s.bidDepth===undefined&&s.askDepth===undefined)||(Number.isFinite(s.bidDepth)&&s.bidDepth!>=0&&Number.isFinite(s.askDepth)&&s.askDepth!>=0);
+ const imb=depthValid&&s.bidDepth!==undefined&&s.askDepth!==undefined&&s.bidDepth+s.askDepth>0?(s.bidDepth-s.askDepth)/(s.bidDepth+s.askDepth):null;
+ const spreadValid=Number.isFinite(s.spreadBps)&&s.spreadBps!>=0,risks:string[]=[];
+ if(!Number.isFinite(s.timestamp)||s.timestamp<=0||!s.source||!s.timeframe)risks.push('Market snapshot metadata invalid');
+ if(invalidPrices||p.length<20)risks.push('Insufficient or invalid price samples');
+ if(!Number.isFinite(quality)||quality<.7||quality>1)risks.push('Market data quality insufficient');
+ if(!depthValid)risks.push('Order-book depth data invalid');
+ if(!spreadValid)risks.push('Spread data unavailable or invalid');else if(s.spreadBps!>15)risks.push('Spread above 15 bps');
  if(vol>.5)risks.push('Elevated realised volatility');
- if(p.length<20)risks.push('Insufficient samples for stable regime classification');
  const direction: 'bullish'|'bearish'|'neutral'=movePct>.15?'bullish':movePct<-.15?'bearish':'neutral';
- const regime=p.length<20?'unknown':vol>.5?'high-volatility':Math.abs(movePct)<.2?'ranging':Math.abs(movePct)<.6?'transitional':direction;
- return {symbol:s.symbol,asOf:s.timestamp,source:s.source,timeframe:s.timeframe,direction,movePct,regime,volatility:{realisedPct:vol,state:vol>.5?'elevated':'normal'},liquidity:{state:s.spreadBps===undefined?'unknown':s.spreadBps>15?'thin':'healthy',spreadBps:s.spreadBps??null,bidAskImbalance:imb},orderFlow:{pressure:imb===null?'unknown':imb>.08?'buying':imb<-.08?'selling':'balanced'},risks,opportunities:quality>=.7&&risks.length===0?['Review directional setups after independent confirmation']:[],tradeable:quality>=.7&&risks.length===0,reasons:risks};
+ const regime=p.length<20||invalidPrices?'unknown':vol>.5?'high-volatility':Math.abs(movePct)<.2?'ranging':Math.abs(movePct)<.6?'transitional':direction;
+ return {symbol:s.symbol,asOf:s.timestamp,source:s.source,timeframe:s.timeframe,direction,movePct,regime,volatility:{realisedPct:vol,state:vol>.5?'elevated':'normal'},liquidity:{state:!spreadValid?'unknown':s.spreadBps!>15?'thin':'healthy',spreadBps:spreadValid?s.spreadBps!:null,bidAskImbalance:imb},orderFlow:{pressure:imb===null?'unknown':imb>.08?'buying':imb<-.08?'selling':'balanced'},risks,opportunities:quality>=.7&&risks.length===0?['Review directional setups after independent confirmation']:[],tradeable:quality>=.7&&risks.length===0,reasons:risks};
 }
 export type Limits={maxRiskPct:number;dailyLossPct:number;weeklyLossPct:number;monthlyLossPct:number;maxDrawdownPct:number;maxPositions:number;maxCorrelatedExposurePct:number;maxLeverage:number;maxMarginUtilisationPct:number};
 export const riskLimits:Limits={maxRiskPct:.25,dailyLossPct:2,weeklyLossPct:5,monthlyLossPct:10,maxDrawdownPct:8,maxPositions:4,maxCorrelatedExposurePct:35,maxLeverage:2,maxMarginUtilisationPct:35};
