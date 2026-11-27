@@ -73,15 +73,15 @@ Vite proxies `/api` to the local Worker at `127.0.0.1:8787`.
 
 ## Cloudflare deployment
 
-1. Create a D1 database named `jp-bots-6` with `npx wrangler d1 create jp-bots-6`.
-2. Replace the all-zero placeholder `database_id` in `wrangler.toml` with the real database ID.
-3. Apply remote migrations: `npm run db:remote`.
+1. The Worker is configured for the supplied D1 database `jpbots-6_db` and ID `cb74859a-b5a2-4347-9249-2de75b4369df` under account `08c532bd849cab6fbecdffbdf1718aa9`.
+2. Apply remote migrations with `npm run db:remote`.
+3. Create or select the KV namespace `jpbots-6_KV`, then add its actual namespace ID to a `[[kv_namespaces]]` binding named `KV` in `wrangler.toml`. Cloudflare requires the namespace ID; the display name and account ID are not sufficient.
 4. Deploy the backend Worker: `npm run deploy:backend`.
 5. Deploy the Vite dashboard to Cloudflare Pages with build command `npm run build` and output directory `dist`.
 6. Configure a Cloudflare Pages Service Binding named `API_WORKER` pointing to the deployed Worker service `jp-bots-6-backend`. The Pages Function under `functions/api/[[path]].ts` proxies dashboard API calls to that binding.
 
-The Worker requires the D1 and Durable Object bindings declared in `wrangler.toml`. Do not deploy the Worker with the placeholder D1 ID.
-
+The Worker must not be deployed until remote migrations have completed and the required KV namespace binding has been configured. Live exchange execution remains disabled.
+ 
 ## Decision and safety boundaries
 
 **Capital protection is the final authority.** The decision path is market intelligence → strategy/signal validation → independent evidence arbitration → capital protection → execution eligibility. Agent consensus cannot override a risk veto.
