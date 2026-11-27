@@ -5,17 +5,21 @@ export type OrderBookSnapshot={symbol:string;timestamp:number;mid:number;bids:Bo
 const sum=(xs:number[])=>xs.reduce((a,b)=>a+b,0);
 const safeRatio=(n:number,d:number)=>d>0?n/d:0;
 export function analyseOrderBook(b:OrderBookSnapshot){
- const bids=[...b.bids].filter(x=>x.price>0&&x.quantity>0).sort((a,b)=>b.price-a.price),asks=[...b.asks].filter(x=>x.price>0&&x.quantity>0).sort((a,b)=>a.price-b.price);
+ if(!b||typeof b.symbol!=='string'||!b.symbol||!Number.isFinite(b.mid)||b.mid<=0||!Number.isFinite(b.timestamp)||b.timestamp<=0||!Array.isArray(b.bids)||!Array.isArray(b.asks))throw new Error('Invalid order-book snapshot');
+ const valid=(x:BookLevel)=>Number.isFinite(x.price)&&x.price>0&&Number.isFinite(x.quantity)&&x.quantity>0;
+ const bids=b.bids.filter(valid).sort((x,y)=>y.price-x.price),asks=b.asks.filter(valid).sort((x,y)=>x.price-y.price);
  const bid=sum(bids.map(x=>x.quantity)),ask=sum(asks.map(x=>x.quantity)),total=bid+ask,obi=safeRatio(bid-ask,total);
- const weighted=(levels:BookLevel[],side:'bid'|'ask')=>sum(levels.map(x=>x.quantity/(1+Math.abs(x.price-b.mid)/b.mid*100)));
- const wb=weighted(bids,'bid'),wa=weighted(asks,'ask'),wobi=safeRatio(wb-wa,wb+wa);
+ const weighted=(levels:BookLevel[])=>sum(levels.map(x=>x.quantity/(1+Math.abs(x.price-b.mid)/b.mid*100)));
+ const wb=weighted(bids),wa=weighted(asks),wobi=safeRatio(wb-wa,wb+wa);
  const bands=[.0005,.001,.0025,.005,.01].map(distance=>({distancePct:distance*100,bidDepth:sum(bids.filter(x=>x.price>=b.mid*(1-distance)).map(x=>x.quantity)),askDepth:sum(asks.filter(x=>x.price<=b.mid*(1+distance)).map(x=>x.quantity))}));
- const bestBid=bids[0],bestAsk=asks[0],spreadBps=bestBid&&bestAsk?safeRatio(bestAsk.price-bestBid.price,b.mid)*10000:null;
- const microprice=bestBid&&bestAsk&&bestBid.quantity+bestAsk.quantity>0?(bestAsk.price*bestBid.quantity+bestBid.price*bestAsk.quantity)/(bestBid.quantity+bestAsk.quantity):null;
- const buyVolume=sum((b.trades??[]).filter(t=>t.aggressor==='buy').map(t=>t.quantity)),sellVolume=sum((b.trades??[]).filter(t=>t.aggressor==='sell').map(t=>t.quantity)),tbi=safeRatio(buyVolume-sellVolume,buyVolume+sellVolume);
+ const bestBid=bids[0],bestAsk=asks[0],crossed=!!(bestBid&&bestAsk&&bestBid.price>=bestAsk.price),spreadBps=bestBid&&bestAsk&&!crossed?safeRatio(bestAsk.price-bestBid.price,b.mid)*10000:null;
+ const microprice=bestBid&&bestAsk&&!crossed&&bestBid.quantity+bestAsk.quantity>0?(bestAsk.price*bestBid.quantity+bestBid.price*bestAsk.quantity)/(bestBid.quantity+bestAsk.quantity):null;
+ const prints=(b.trades??[]).filter(t=>Number.isFinite(t.price)&&t.price>0&&Number.isFinite(t.quantity)&&t.quantity>0&&Number.isFinite(t.timestamp));
+ const buyVolume=sum(prints.filter(t=>t.aggressor==='buy').map(t=>t.quantity)),sellVolume=sum(prints.filter(t=>t.aggressor==='sell').map(t=>t.quantity)),tbi=safeRatio(buyVolume-sellVolume,buyVolume+sellVolume);
  let ofi:number|null=null;
- if(b.previous){const oldBid=sum(b.previous.bids.map(x=>x.quantity)),oldAsk=sum(b.previous.asks.map(x=>x.quantity));ofi=safeRatio((bid-oldBid)-(ask-oldAsk),Math.abs(bid-oldBid)+Math.abs(ask-oldAsk));}
- return {symbol:b.symbol,timestamp:b.timestamp,bestBid:bestBid??null,bestAsk:bestAsk??null,spreadBps,obi,wobi,bands,microprice,buyVolume,sellVolume,tbi,orderFlowImbalance:ofi,liquidityState:spreadBps===null?'unknown':spreadBps>20?'thin':'normal',warnings:[...(spreadBps!==null&&spreadBps>20?['Wide spread']:[]),...(bids.length===0||asks.length===0?['Incomplete book side']:[])]};
+ if(b.previous){const oldBids=b.previous.bids.filter(valid),oldAsks=b.previous.asks.filter(valid),oldBid=sum(oldBids.map(x=>x.quantity)),oldAsk=sum(oldAsks.map(x=>x.quantity));ofi=safeRatio((bid-oldBid)-(ask-oldAsk),Math.abs(bid-oldBid)+Math.abs(ask-oldAsk));}
+ const warnings=[...(crossed?['Crossed or locked book']:[]),...(spreadBps!==null&&spreadBps>20?['Wide spread']:[]),...(bids.length===0||asks.length===0?['Incomplete book side']:[])];
+ return {symbol:b.symbol,timestamp:b.timestamp,bestBid:bestBid??null,bestAsk:bestAsk??null,spreadBps,obi,wobi,bands,microprice,buyVolume,sellVolume,tbi,orderFlowImbalance:ofi,liquidityState:crossed?'invalid':spreadBps===null?'unknown':spreadBps>20?'thin':'normal',warnings};
 }
 export function simulateBookSweep(levels:BookLevel[],side:'buy'|'sell',quantity:number,feeBps=0){
  if(!Number.isFinite(quantity)||quantity<=0||feeBps<0)return {valid:false,filled:0,unfilled:Math.max(0,quantity),averagePrice:null,totalValue:0,fees:0,slippagePct:null};
