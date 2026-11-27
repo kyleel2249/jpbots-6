@@ -1,5 +1,5 @@
 export type GlobalAssetClass='crypto-spot'|'crypto-perpetual'|'forex-reference'|'equity'|'index'|'commodity'|'dex-pool'|'onchain-network';
-export type GlobalInstrument={id:string;symbol:string;name:string;assetClass:GlobalAssetClass;venue:string;chain?:string;quote?:string;price?:number;change24hPct?:number;volume24hUsd?:number;liquidityUsd?:number;observedAt:number;source:string;tradable:boolean;metadata?:Record<string,unknown>};
+export type GlobalInstrument={id:string;symbol:string;name:string;assetClass:GlobalAssetClass;venue:string;chain?:string;quote?:string;price?:number;change24hPct?:number;volume24hUsd?:number;liquidityUsd?:number;tvlUsd?:number;observedAt:number;source:string;tradable:boolean;metadata?:Record<string,unknown>};
 export type Candle={openTime:number;open:number;high:number;low:number;close:number;volume:number;closeTime?:number};
 export type PatternSignal={name:string;direction:'bullish'|'bearish'|'neutral';strength:number;detail:string};
 const mean=(v:number[])=>v.length?v.reduce((a,b)=>a+b,0)/v.length:null;
