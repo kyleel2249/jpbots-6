@@ -44,7 +44,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
   const valid=(rows:Candle[])=>rows.filter(c=>(c.closeTime===undefined||c.closeTime<now)&&[c.openTime,c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite)&&c.low>0&&c.high>=c.low&&c.close>0&&c.volume>=0).sort((a,b)=>a.openTime-b.openTime);
   const one=valid(input.candles1m),five=valid(input.candles5m),hour=valid(input.candles1h);
   if(!Number.isFinite(input.feeBps??10)||(input.feeBps??10)<0)throw new Error('Invalid paper fee assumption');
-  if(book.bids[0].price<=0||book.asks[0].price<=book.bids[0].price)throw new Error('Crossed or invalid order book');
+  if(![...book.bids,...book.asks].every(l=>Number.isFinite(l.price)&&l.price>0&&Number.isFinite(l.quantity)&&l.quantity>0)||book.bids[0].price<=0||book.asks[0].price<=book.bids[0].price)throw new Error('Crossed or invalid order book levels');
   if(one.length<30||five.length<30||hour.length<22)throw new Error('Insufficient closed candles for independent division evidence');
   const scalpDirection=direction(one.map(c=>c.close)),dayDirection=direction(five.map(c=>c.close))===direction(hour.map(c=>c.close))?direction(five.map(c=>c.close)):'neutral';
   const bid=book.bids[0].price,ask=book.asks[0].price,spreadBps=(ask-bid)/mid*10000;
@@ -58,7 +58,6 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
   const dayVwapAligned=dayDirection==='long'?mid>=vwap(five):dayDirection==='short'?mid<=vwap(five):false;
   const scalpVolumeRatio=volumeRatio(one),dayVolumeRatio=volumeRatio(five),scalpVolatility=atrPct(one),dayVolatility=atrPct(five);
   const dayImbalance=imbalance(book),scalpImbalance=imbalance(book);
-  const vwapAligned=dayDirection==='long'?mid>=vwap(five):dayDirection==='short'?mid<=vwap(five):false;
   return {
     symbol:input.symbol,assetClass:input.assetClass,price:mid,direction:dayDirection,
     scalpingDirection:scalpDirection,dayTradingDirection:dayDirection,
@@ -71,7 +70,7 @@ export function buildDivisionMarketEvidence(input:DivisionMarketInput):MarketEvi
     scalpingMarketStructureShift:scalpMss,dayTradingMarketStructureShift:dayMss,scalpingVwapAligned,dayTradingVwapAligned:dayVwapAligned,
     trendAlignment:scalpDirection==='long'?1:scalpDirection==='short'?-1:0,
     orderBookImbalance:scalpImbalance,liquidityUsd:depthUsd,atrPct:dayVolatility,scalpingAtrPct:scalpVolatility,dayTradingAtrPct:dayVolatility,
-    dataAgeMs:Math.max(0,now-book.timestamp),scalpingDataAgeMs:book.trades?.length?Math.max(0,now-Math.max(...book.trades.map(t=>t.timestamp))):Number.MAX_SAFE_INTEGER,dayTradingDataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
+    dataAgeMs:Math.max(0,now-book.timestamp),scalpingDataAgeMs:book.trades?.length&&Math.max(...book.trades.map(t=>t.timestamp))<=now?Math.max(0,now-Math.max(...book.trades.map(t=>t.timestamp))):Number.MAX_SAFE_INTEGER,dayTradingDataAgeMs:Math.max(0,now-book.timestamp),sessionEligible:input.sessionEligible??true,
     fvg:dayFvg||scalpFvg,liquiditySweep:daySweep||scalpSweep,marketStructureShift:dayMss,vwapAligned:dayVwapAligned,fundingExtreme:false
   };
 }
