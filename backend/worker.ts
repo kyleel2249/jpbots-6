@@ -1,6 +1,7 @@
 import { allAgentRoles, departments, platformServices } from '../src/departments';
 import { buildMarketReport, evaluateIntegratedOpportunity } from '../src/intelligence';
 import type { Snapshot } from '../src/intelligence';
+import { analyseOrderBook } from '../src/shared-services';
 import type { Evidence, OrderBookSnapshot, CapitalState } from '../src/shared-services';
 
 interface D1Result { success:boolean; results?:any[]; meta?:any }
@@ -77,7 +78,7 @@ async function route(request:Request,env:Env):Promise<Response>{
  }
  if(path==='/api/market/depth'&&request.method==='GET'){
   const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase(),bundle=await marketBundle(env,symbol);
-  const depth=(await import('../src/shared-services')).analyseOrderBook(bundle.book);
+  const depth=analyseOrderBook(bundle.book);
   await env.DB.prepare('INSERT INTO orderbook_snapshots(id,symbol,source,observed_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),symbol,'Binance Spot REST',Date.now(),JSON.stringify(depth)).run();
   return json({symbol,source:'Binance Spot REST',observedAt:Date.now(),...depth});
  }
