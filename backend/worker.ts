@@ -41,6 +41,7 @@ const uuid=()=>crypto.randomUUID();
 const binance=(env:Env)=> (env.BINANCE_BASE_URL||'https://data-api.binance.vision').replace(/\/$/,'');
 const dexscreener=(env:Env)=>(env.DEXSCREENER_BASE_URL||'https://api.dexscreener.com').replace(/\/$/,'');
 async function getJson<T>(url:string):Promise<T>{const response=await fetch(url,{headers:{accept:'application/json'}});if(!response.ok)throw new Error('Provider returned HTTP '+response.status);return response.json() as Promise<T>;}
+async function masterTradingEnabled(env:Env):Promise<boolean>{try{const id=env.ORCHESTRATOR.idFromName('global'),response=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/master-status');if(!response.ok)return false;const state=await response.json() as any;return state.enabled===true;}catch{return false;}}
 async function audit(env:Env,type:string,actor:string,payload:unknown){await env.DB.prepare('INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),type,actor,Date.now(),JSON.stringify(payload)).run();}
 function ema(values:number[],period:number){if(values.length<period)return null;const k=2/(period+1);let v=values.slice(0,period).reduce((a,b)=>a+b,0)/period;for(const x of values.slice(period))v=x*k+v*(1-k);return v;}
 function rsi(values:number[],period=14){if(values.length<=period)return null;let gains=0,losses=0;for(let i=values.length-period;i<values.length;i++){const delta=values[i]-values[i-1];if(delta>0)gains+=delta;else losses-=delta;}if(losses===0)return 100;const rs=(gains/period)/(losses/period);return 100-100/(1+rs);}
@@ -125,6 +126,7 @@ async function monitorPaperPositions(env:Env,symbol:string,book:OrderBookSnapsho
  return results;
 }
 async function createPaperOrder(env:Env,body:any){
+ if(!await masterTradingEnabled(env))return {error:'Universal master control is disabled; paper entries are blocked',status:423};
  const symbol=String(body.symbol||'').toUpperCase(),stopPrice=Number(body.stopPrice),targetPrice=Number(body.targetPrice),riskPct=Number(body.riskPct??0.2),feeBps=Number(body.feeBps??10);
  if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!Number.isFinite(stopPrice)||!Number.isFinite(targetPrice)||!Number.isFinite(riskPct)||!Number.isFinite(feeBps))return {error:'symbol, stopPrice, targetPrice and valid risk/fee values are required',status:400};
  const account=await getPaperAccount(env);if(!account)return {error:'Paper account has not been initialized; apply database migrations',status:503};
@@ -332,6 +334,7 @@ async function closeDivisionPaperPosition(env:Env,position:any,book:OrderBookSna
  return {closed:true,positionId:position.position_id,division:position.division_id,netPnl:exit.netPnl,rMultiple,reason};
 }
 async function openDivisionPaperPosition(env:Env,division:TradingDivision,assessment:any,evidence:MarketEvidence,book:OrderBookSnapshot,policy:DivisionPolicy){
+ if(!await masterTradingEnabled(env))return {opened:false,reason:'Universal master control is disabled'};
  const account=await divisionAccount(env,division);if(!account)return {opened:false,reason:'division paper account not initialized'};
  const today=new Date().toISOString().slice(0,10);
  if(account.day_key!==today){await env.DB.prepare('UPDATE division_paper_accounts SET day_key=?,day_start_equity=equity,daily_loss_pct=0,updated_at=? WHERE division_id=?').bind(today,Date.now(),division).run();account.day_key=today;account.day_start_equity=Number(account.equity);account.daily_loss_pct=0;}
@@ -508,6 +511,48 @@ async function route(request:Request,env:Env):Promise<Response>{
  if(path==='/api/agents'&&request.method==='GET'){
   const [states,assignments]=await Promise.all([env.DB.prepare('SELECT role_id,enabled,status,heartbeat_at,last_error,updated_at FROM agent_state').all<any>(),env.DB.prepare('SELECT role_id,division_id,symbol,timeframe,status,assignment_source,assigned_at,updated_at FROM agent_assignments').all<any>()]),byId=new Map(states.results.map(x=>[x.role_id,x])),byAssignment=new Map(assignments.results.map(x=>[x.role_id,x]));
   return json({registered:allAgentRoles.length,agents:allAgentRoles.map((r,i)=>{const id=r.departmentId+':'+r.name,state=byId.get(id),assignment=byAssignment.get(id),enabled=state?.enabled===1,divisionId=r.departmentId==='scalp'?'scalping':r.departmentId==='day'?'day-trading':'shared';return {id,sequence:i+1,name:r.name,department:r.department,departmentId:r.departmentId,divisionId,task:r.task,enabled,status:!enabled?'PAUSED':assignment?.status??state?.status??'AWAITING_ASSIGNMENT',symbol:assignment?.symbol??null,timeframe:assignment?.timeframe??(r.departmentId==='scalp'?'1m/3m/5m':r.departmentId==='day'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME'),assignmentSource:assignment?.assignment_source??null,assignedAt:assignment?.assigned_at??null,heartbeatAt:state?.heartbeat_at??null,lastError:state?.last_error??null,workerProcessRunning:false,executionScope:r.departmentId==='scalp'?'SCALPING_DIVISION_POLICY':r.departmentId==='day'?'DAY_TRADING_DIVISION_POLICY':r.departmentId==='institutional'?'INSTITUTIONAL_EVIDENCE_HANDLER':'SHARED_INTELLIGENCE'};})});
+ }
+ if(path==='/api/master-control'&&request.method==='GET'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const id=env.ORCHESTRATOR.idFromName('global'),response=await env.ORCHESTRATOR.get(id).fetch('https://orchestrator/master-status');
+  if(!response.ok)return json({ok:false,error:'Master-control status unavailable; execution must be treated as disabled'},503);
+  const state=await response.json() as any;
+  let counts={enabled:0,registered:allAgentRoles.length};try{const row=await env.DB.prepare('SELECT COUNT(*) AS count FROM agent_state WHERE enabled=1').first<any>();counts.enabled=Number(row?.count||0);}catch{}
+  return json({ok:true,...state,agents:counts,liveTradingEnabled:false});
+ }
+ if(path==='/api/master-control'&&request.method==='POST'){
+  if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
+  const body=await request.json().catch(()=>({})) as any;
+  if(typeof body.enabled!=='boolean')return json({error:'A boolean enabled value is required'},400);
+  const enabled=body.enabled,now=Date.now(),id=env.ORCHESTRATOR.idFromName('global'),orchestrator=env.ORCHESTRATOR.get(id);
+  // Fail closed first: the Durable Object gate is independent of D1 and clears queued work.
+  if(!enabled){
+   const stopped=await orchestrator.fetch('https://orchestrator/master-control',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:false})});
+   if(!stopped.ok)return json({ok:false,enabled:false,error:'Could not confirm scheduler stop; treat system as unavailable and do not assume agents are stopped'},503);
+  }
+  const statements:D1Statement[]=[];let supportedCount=0,awaitingCapabilityCount=0;
+  for(const role of allAgentRoles){
+   const roleId=role.departmentId+':'+role.name,divisionId=role.departmentId==='scalp'?'scalping':role.departmentId==='day'?'day-trading':'shared';
+   const supported=role.departmentId==='institutional'||(role.departmentId==='scalp'&&role.name==='Scalping Market Scanner')||(role.departmentId==='day'&&role.name==='Intraday Market Scanner');
+   const status=enabled?(supported?'AWAITING_MARKET_DATA':'AWAITING_CAPABILITY'):'PAUSED';
+   if(enabled&&supported)supportedCount++;else if(enabled)awaitingCapabilityCount++;
+   const error=enabled?(supported?'Waiting for the next fresh eligible market scan':'This specialist role has no independent scheduled execution handler yet'):null;
+   const timeframe=role.departmentId==='scalp'?'1m/3m/5m':role.departmentId==='day'?'5m/15m/30m/1h/4h':'MULTI-TIMEFRAME';
+   statements.push(env.DB.prepare("INSERT INTO agent_state(role_id,enabled,status,heartbeat_at,last_error,updated_at) VALUES(?,?,?,NULL,?,?) ON CONFLICT(role_id) DO UPDATE SET enabled=excluded.enabled,status=excluded.status,last_error=excluded.last_error,updated_at=excluded.updated_at").bind(roleId,enabled?1:0,status,error,now));
+   statements.push(env.DB.prepare("INSERT INTO agent_assignments(role_id,division_id,symbol,timeframe,status,assignment_source,assigned_at,updated_at) VALUES(?,?,NULL,?,?,NULL,NULL,?) ON CONFLICT(role_id) DO UPDATE SET division_id=excluded.division_id,symbol=NULL,timeframe=excluded.timeframe,status=excluded.status,assignment_source=NULL,assigned_at=NULL,updated_at=excluded.updated_at").bind(roleId,divisionId,timeframe,status,now));
+  }
+  statements.push(env.DB.prepare("UPDATE trading_divisions SET enabled=0,updated_at=? WHERE division_id IN (?,?)").bind(now,'scalping','day-trading'));
+  statements.push(env.DB.prepare('INSERT INTO audit_events(id,event_type,actor,created_at,payload_json) VALUES(?,?,?,?,?)').bind(uuid(),enabled?'master_control.activated':'master_control.deactivated','operator',now,JSON.stringify({enabled,total:allAgentRoles.length,supportedCount,awaitingCapabilityCount})));
+  try{for(let i=0;i<statements.length;i+=80)await env.DB.batch(statements.slice(i,i+80));}
+  catch(error){
+   if(enabled)return json({ok:false,enabled:false,masterControl:'DISABLED',error:'Activation was not completed because agent state could not be persisted: '+String(error),liveTradingEnabled:false},503);
+   return json({ok:false,enabled:false,masterControl:'DISABLED',agentsPersisted:false,error:'Execution gate is disabled and queued work has been cleared, but D1 agent-state persistence failed: '+String(error),liveTradingEnabled:false},503);
+  }
+  if(enabled){
+   const started=await orchestrator.fetch('https://orchestrator/master-control',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:true})});
+   if(!started.ok)return json({ok:false,enabled:false,masterControl:'DISABLED',error:'Agent state persisted, but scheduler activation could not be confirmed. System remains fail-closed.',liveTradingEnabled:false},503);
+  }
+  return json({ok:true,enabled,total:allAgentRoles.length,supportedCount,awaitingCapabilityCount,status:enabled?'ACTIVATED':'DEACTIVATED',message:enabled?'Master control enabled. Supported agents will receive fresh market assignments; unsupported roles remain capability-gated.':'Master control disabled. Scheduled work was cleared and new paper entries are blocked.',liveTradingEnabled:false,changedAt:now});
  }
  if(path==='/api/agents/control-all'&&request.method==='POST'){
   if(!operatorAuthorized(request,env))return json({error:'Operator authentication required'},401);
@@ -804,16 +849,20 @@ export class AgentOrchestrator {
  async fetch(request:Request):Promise<Response>{
   const url=new URL(request.url);
   if(url.pathname==='/ensure-schedule'){const started=await this.state.storage.get<boolean>('schedulerStarted')??false;if(!started){await this.state.storage.put('schedulerStarted',true);await this.state.storage.setAlarm(Date.now()+1000);}return json({scheduler:'durable-object-alarm',started:true,cronRequired:false});}
-  if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[],lastProcessedAt=await this.state.storage.get<number>('lastProcessedAt')??null,lastError=await this.state.storage.get<string>('lastError')??null,processedCount=await this.state.storage.get<number>('processedCount')??0,schedulerStarted=await this.state.storage.get<boolean>('schedulerStarted')??false,lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute')??null;return json({id:this.state.id.toString(),queued:queue.length,lastProcessedAt,lastError,processedCount,scheduler:'durable-object-alarm',schedulerStarted,lastScheduledMinute,cronRequired:false,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
-  if(url.pathname==='/enqueue'&&request.method==='POST'){const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[],keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||''))),candidates=tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))),capacity=Math.max(0,500-queue.length),accepted=candidates.slice(0,capacity),rejectedCapacity=candidates.length-accepted.length;await this.state.storage.put('queue',[...queue,...accepted]);if(accepted.length)await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:accepted.length,skippedDuplicates:tasks.length-candidates.length,rejectedCapacity,queued:queue.length+accepted.length});}
+  if(url.pathname==='/master-status'){const queue=await this.state.storage.get<Task[]>('queue')??[],enabled=await this.state.storage.get<boolean>('masterEnabled')??false;return json({enabled,status:enabled?'ACTIVE':'DISABLED',queued:queue.length,liveTradingEnabled:false,checkedAt:Date.now()});}
+  if(url.pathname==='/master-control'&&request.method==='POST'){const body=await request.json().catch(()=>({})) as any;if(typeof body.enabled!=='boolean')return json({error:'A boolean enabled value is required'},400);await this.state.storage.put('masterEnabled',body.enabled);let cancelled=0;if(!body.enabled){const queue=await this.state.storage.get<Task[]>('queue')??[];cancelled=queue.length;await this.state.storage.put('queue',[]);}await this.state.storage.setAlarm(Date.now()+250);return json({ok:true,enabled:body.enabled,cancelledQueuedTasks:cancelled,liveTradingEnabled:false,changedAt:Date.now()});}
+  if(url.pathname==='/status'){const queue=await this.state.storage.get<Task[]>('queue')??[],masterEnabled=await this.state.storage.get<boolean>('masterEnabled')??false,lastProcessedAt=await this.state.storage.get<number>('lastProcessedAt')??null,lastError=await this.state.storage.get<string>('lastError')??null,processedCount=await this.state.storage.get<number>('processedCount')??0,schedulerStarted=await this.state.storage.get<boolean>('schedulerStarted')??false,lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute')??null;return json({id:this.state.id.toString(),queued:queue.length,masterEnabled,lastProcessedAt,lastError,processedCount,scheduler:'durable-object-alarm',schedulerStarted,lastScheduledMinute,cronRequired:false,workerType:'durable-object-queue',aiWorkersRunning:false,liveTradingEnabled:false});}
+  if(url.pathname==='/enqueue'&&request.method==='POST'){const enabled=await this.state.storage.get<boolean>('masterEnabled')??false;if(!enabled)return json({accepted:0,rejectedCapacity:0,queued:0,error:'Universal master control is disabled'},423);const tasks=await request.json() as Task[],queue=await this.state.storage.get<Task[]>('queue')??[],keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||''))),candidates=tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))),capacity=Math.max(0,500-queue.length),accepted=candidates.slice(0,capacity),rejectedCapacity=candidates.length-accepted.length;await this.state.storage.put('queue',[...queue,...accepted]);if(accepted.length)await this.state.storage.setAlarm(Date.now()+1000);return json({accepted:accepted.length,skippedDuplicates:tasks.length-candidates.length,rejectedCapacity,queued:queue.length+accepted.length});}
   return json({error:'Not found'},404);
  }
  async alarm():Promise<void>{
+  const masterEnabled=await this.state.storage.get<boolean>('masterEnabled')??false;
+  if(!masterEnabled){const pending=await this.state.storage.get<Task[]>('queue')??[];if(pending.length)await this.state.storage.put('queue',[]);await this.state.storage.setAlarm((Math.floor(Date.now()/60000)+1)*60000+250);return;}
   const now=Date.now(),minuteKey=new Date(now).toISOString().slice(0,16),lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute');
   let queue=await this.state.storage.get<Task[]>('queue')??[];
   if(minuteKey!==lastScheduledMinute){let hasOpenDivisionPositions=false;try{const open=await this.env.DB.prepare("SELECT COUNT(*) AS count FROM division_paper_positions WHERE status IN ('open','closing')").first<any>();hasOpenDivisionPositions=Number(open?.count||0)>0;}catch{}const tasks=buildScheduledScannerTasks(now,this.env.AUTO_PAPER_ENABLED==='true',uuid,hasOpenDivisionPositions);const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
   const batch=queue.splice(0,SCANNER_TASKS_PER_ALARM);let processed=0,nextDelay=1000;
-  for(const task of batch){try{
+  for(const task of batch){if(!(await this.state.storage.get<boolean>('masterEnabled')??false)){queue.length=0;break;}try{
     await this.env.DB.batch([
      this.env.DB.prepare("INSERT OR REPLACE INTO agent_task_leases(task_id,owner,lease_until,heartbeat_at,attempts) VALUES(?,?,?,?,?)").bind(task.id,this.state.id.toString(),Date.now()+30_000,Date.now(),task.attempts??0),
      this.env.DB.prepare("UPDATE agent_tasks SET status='running',updated_at=? WHERE id=?").bind(Date.now(),task.id)
