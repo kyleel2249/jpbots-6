@@ -857,12 +857,24 @@ export class AgentOrchestrator {
  }
  async alarm():Promise<void>{
   const masterEnabled=await this.state.storage.get<boolean>('masterEnabled')??false;
-  if(!masterEnabled){const pending=await this.state.storage.get<Task[]>('queue')??[];if(pending.length)await this.state.storage.put('queue',[]);await this.state.storage.setAlarm((Math.floor(Date.now()/60000)+1)*60000+250);return;}
   const now=Date.now(),minuteKey=new Date(now).toISOString().slice(0,16),lastScheduledMinute=await this.state.storage.get<string>('lastScheduledMinute');
   let queue=await this.state.storage.get<Task[]>('queue')??[];
-  if(minuteKey!==lastScheduledMinute){let hasOpenDivisionPositions=false;try{const open=await this.env.DB.prepare("SELECT COUNT(*) AS count FROM division_paper_positions WHERE status IN ('open','closing')").first<any>();hasOpenDivisionPositions=Number(open?.count||0)>0;}catch{}const tasks=buildScheduledScannerTasks(now,this.env.AUTO_PAPER_ENABLED==='true',uuid,hasOpenDivisionPositions);const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));await this.state.storage.put('lastScheduledMinute',minuteKey);}
+  if(!masterEnabled){
+   // Keep protective position monitoring alive, but discard every strategy/agent task.
+   const open=await this.env.DB.prepare("SELECT COUNT(*) AS count FROM division_paper_positions WHERE status IN ('open','closing')").first<any>().catch(()=>null);
+   queue=[];
+   if(Number(open?.count||0)>0)queue.push({id:uuid(),kind:'division-position-monitor',symbol:'GLOBAL',createdAt:now});
+   await this.state.storage.put('queue',queue);
+   if(!queue.length){await this.state.storage.setAlarm((Math.floor(now/60000)+1)*60000+250);return;}
+  }else if(minuteKey!==lastScheduledMinute){
+   let hasOpenDivisionPositions=false;try{const open=await this.env.DB.prepare("SELECT COUNT(*) AS count FROM division_paper_positions WHERE status IN ('open','closing')").first<any>();hasOpenDivisionPositions=Number(open?.count||0)>0;}catch{}
+   const tasks=buildScheduledScannerTasks(now,this.env.AUTO_PAPER_ENABLED==='true',uuid,hasOpenDivisionPositions);
+   const keys=new Set(queue.map(t=>t.kind+':'+t.symbol+':'+(t.roleId||'')));
+   queue.push(...tasks.filter(t=>!keys.has(t.kind+':'+t.symbol+':'+(t.roleId||''))).slice(0,Math.max(0,500-queue.length)));
+   await this.state.storage.put('lastScheduledMinute',minuteKey);
+  }
   const batch=queue.splice(0,SCANNER_TASKS_PER_ALARM);let processed=0,nextDelay=1000;
-  for(const task of batch){if(!(await this.state.storage.get<boolean>('masterEnabled')??false)){queue.length=0;break;}try{
+  for(const task of batch){if(!(await this.state.storage.get<boolean>('masterEnabled')??false)&&task.kind!=='division-position-monitor'){queue.length=0;break;}try{
     await this.env.DB.batch([
      this.env.DB.prepare("INSERT OR REPLACE INTO agent_task_leases(task_id,owner,lease_until,heartbeat_at,attempts) VALUES(?,?,?,?,?)").bind(task.id,this.state.id.toString(),Date.now()+30_000,Date.now(),task.attempts??0),
      this.env.DB.prepare("UPDATE agent_tasks SET status='running',updated_at=? WHERE id=?").bind(Date.now(),task.id)
