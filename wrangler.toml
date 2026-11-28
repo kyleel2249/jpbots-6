@@ -26,6 +26,8 @@ ALPACA_ENDPOINT = "https://paper-api.alpaca.markets/v2"
 AMD_PAPER_FORWARD_ENABLED = "false"
 AMD_SESSION_TIMEZONE = "UTC"
 AUTO_PAPER_ENABLED = "true"
+EVENT_FEED_URL = "https://finnhub.io/api/v1/calendar/economic"
+FX_CANDLES_URL = "https://api.twelvedata.com/time_series"
 
 [[kv_namespaces]]
 binding = "KV_BINDING"
